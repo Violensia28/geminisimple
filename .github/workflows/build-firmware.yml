@@ -22,16 +22,16 @@ jobs:
       - name: Build PlatformIO Project
         run: pio run
 
-      # --- PERUBAHAN DI SINI ---
-      # Upload ketiga file yang dibutuhkan untuk flashing
+      # Langkah Tambahan untuk Debugging (Opsional tapi Bermanfaat)
+      # Ini akan menampilkan semua file yang ada di folder build
+      - name: List Build Files
+        run: ls -l .pio/build/doit_esp32_devkit_v1/
+
+      # --- PERUBAHAN UTAMA DI SINI ---
+      # Menggunakan wildcard (*) untuk meng-upload semua file .bin
       - name: Upload Firmware Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Nama artifact yang akan berisi semua file
           name: esp32-flash-files
-          # Path ke 3 file yang akan di-upload
-          path: |
-            .pio/build/doit_esp32_devkit_v1/bootloader.bin
-            .pio/build/doit_esp32_devkit_v1/partitions.bin
-            .pio/build/doit_esp32_devkit_v1/firmware.bin
-            
+          path: .pio/build/doit_esp32_devkit_v1/*.bin
+          
