@@ -1,6 +1,3 @@
-// WAJIB DI BARIS PALING ATAS
-#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
@@ -61,6 +58,5 @@ void setup() {
 }
 
 void loop() {
-  // Untuk mode Async, Anda tidak perlu memanggil ElegantOTA.loop()
-  // Biarkan loop kosong agar tidak mengganggu proses async.
+  // Kosongkan untuk mode Async
 }
