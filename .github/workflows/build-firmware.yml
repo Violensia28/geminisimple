@@ -1,44 +1,37 @@
-# Nama workflow yang akan tampil di tab Actions
 name: Build Firmware for DOIT ESP32 DEVKIT V1
 
-# Memicu workflow setiap kali ada 'push' ke semua branch
 on: [push]
 
-# Daftar pekerjaan (jobs) yang akan dijalankan
 jobs:
   build:
-    # Menggunakan runner virtual Ubuntu versi terbaru dari GitHub
     runs-on: ubuntu-latest
-
-    # Langkah-langkah (steps) dalam pekerjaan 'build'
     steps:
-      # 1. Checkout kode dari repositori Anda ke runner
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Setup environment Python yang dibutuhkan oleh PlatformIO
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      # 3. Install PlatformIO Core
       - name: Install PlatformIO
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade platformio
 
-      # 4. Kompilasi/build proyek menggunakan PlatformIO CLI
-      #    Secara otomatis akan menggunakan environment dari platformio.ini
       - name: Build PlatformIO Project
         run: pio run
 
-      # 5. Upload hasil kompilasi (firmware.bin) sebagai artifact
-      - name: Upload Firmware Artifact
+      # --- PERUBAHAN DI SINI ---
+      # Upload ketiga file yang dibutuhkan untuk flashing
+      - name: Upload Firmware Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Nama artifact yang akan dibuat
-          name: esp32-firmware-bin
-          # Path ke file .bin yang sudah disesuaikan untuk board Anda
-          path: .pio/build/doit_esp32_devkit_v1/firmware.bin
-          
+          # Nama artifact yang akan berisi semua file
+          name: esp32-flash-files
+          # Path ke 3 file yang akan di-upload
+          path: |
+            .pio/build/doit_esp32_devkit_v1/bootloader.bin
+            .pio/build/doit_esp32_devkit_v1/partitions.bin
+            .pio/build/doit_esp32_devkit_v1/firmware.bin
+            
