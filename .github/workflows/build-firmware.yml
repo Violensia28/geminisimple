@@ -1,0 +1,45 @@
+# Nama workflow yang akan muncul di tab "Actions" GitHub
+name: Build MOTsmart Firmware
+
+# Pemicu: Jalankan workflow ini setiap kali ada 'push' ke repository
+on: [push]
+
+jobs:
+  # Nama job, bisa apa saja
+  build:
+    # Mesin virtual yang akan digunakan untuk build
+    runs-on: ubuntu-latest
+
+    steps:
+      # Langkah 1: Checkout kode dari repository ke mesin virtual
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      # Langkah 2: Cache dependensi PlatformIO untuk mempercepat build berikutnya
+      - name: Cache PlatformIO dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio/
+          key: ${{ runner.os }}-platformio-${{ hashFiles('**/platformio.ini') }}
+
+      # Langkah 3: Setup Python (diperlukan oleh PlatformIO)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # Langkah 4: Install PlatformIO Core
+      - name: Install PlatformIO Core
+        run: pip install -U platformio
+
+      # Langkah 5: Jalankan perintah build PlatformIO
+      - name: Build PlatformIO project
+        run: pio run
+
+      # Langkah 6: Simpan firmware yang sudah di-build sebagai "Artifact"
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-bin
+          path: .pio/build/esp32dev/firmware.bin
+          
