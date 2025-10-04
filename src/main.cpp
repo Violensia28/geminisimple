@@ -2,7 +2,7 @@
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <AsyncElegantOTA.h>
+#include <ElegantOTA.h> // <-- Perubahan: Gunakan header yang baru
 
 // Ganti dengan nama WiFi dan password yang Anda inginkan
 const char* ssid = "MOTsmart SimpleWeld";
@@ -10,6 +10,9 @@ const char* password = "password123";
 
 // Buat instance AsyncWebServer pada port 80
 AsyncWebServer server(80);
+
+// Variabel global untuk melacak proses OTA
+bool ota_start = false;
 
 // HTML sederhana untuk halaman utama
 const char index_html[] PROGMEM = R"rawliteral(
@@ -50,9 +53,22 @@ void setup() {
   });
 
   // ================================================================
-  // == INI ADALAH BARIS KUNCI UNTUK MENGAKTIFKAN OTA UPDATE ==
+  // == PERUBAHAN KODE OTA DI SINI ==
   // ================================================================
-  AsyncElegantOTA.begin(&server);
+  ElegantOTA.begin(&server);    // Mulai ElegantOTA
+  ElegantOTA.onStart([]() {     // Tambahkan callback onStart
+    ota_start = true;
+    Serial.println("OTA update started!");
+  });
+  ElegantOTA.onEnd([](bool success) { // Tambahkan callback onEnd
+    ota_start = false;
+    if (success) {
+      Serial.println("OTA update finished successfully!");
+    } else {
+      Serial.println("OTA update failed!");
+    }
+  });
+
 
   // Mulai server
   server.begin();
@@ -60,5 +76,8 @@ void setup() {
 }
 
 void loop() {
-  // Tidak perlu ada kode di sini, karena server berjalan secara asynchronous
+  // Hanya jalankan loop ElegantOTA saat update sedang berlangsung
+  if (ota_start) {
+    ElegantOTA.loop();
+  }
 }
