@@ -12,24 +12,25 @@
 // --- KONFIGURASI ---
 const char* ssid = "MOTsmart SimpleWeld";
 const char* password = "password123";
-const int WELD_PIN = 23;
-const int VOLTAGE_PIN = 35;
-const int CURRENT_PIN = 34;
-const int AUTOSPOT_PIN = 22; // Pin untuk footswitch/microswitch
-const int MAX_PULSE_SAFETY_LIMIT_MS = 1000;
+const int WELD_PIN = 22;      // Pin trigger SSR/Relay
+const int VOLTAGE_PIN = 35;   // Pin analog untuk ZMPT101B
+const int CURRENT_PIN = 34;   // Pin analog untuk ACS712
+const int AUTOSPOT_PIN = 23; // Pin untuk footswitch/microswitch
+const int MAX_PULSE_SAFETY_LIMIT_MS = 1000; // Batas aman pulsa maksimal 1 detik
 
 // --- Objek & Variabel Global ---
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 EnergyMonitor emon;
 unsigned long last_sensor_read = 0;
+const int SENSOR_READ_INTERVAL = 1000;
 
 // Variabel untuk mode Smart-Learn
 float suggested_energy = 400; // Energi awal yang disarankan
 float locked_energy = 0;      // 0 berarti belum dikunci
 const int ENERGY_ADJUST_STEP = 50; // Penambahan/pengurangan energi saat feedback
 
-// HTML diperbarui dengan tombol feedback
+// --- Halaman Web (HTML, CSS, JavaScript) ---
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
 <head>
@@ -96,27 +97,30 @@ const char index_html[] PROGMEM = R"rawliteral(
 
 <script>
   var websocket;
-  function initWebSocket() { /* ... (sama seperti sebelumnya) ... */ }
-  function onOpen(event) { console.log('WS Opened'); }
-  function onClose(event) { console.log('WS Closed'); setTimeout(initWebSocket, 2000); }
-  function onMessage(event) {
-    var data = JSON.parse(event.data);
-    if (data.status) { document.getElementById('status-box').innerText = 'STATUS: ' + data.status; }
-    if (data.vrms != null) { document.getElementById('vrms').innerText = data.vrms.toFixed(1); }
-    if (data.irms != null) { document.getElementById('irms').innerText = data.irms.toFixed(2); }
-    if (data.suggested_energy != null) {
+  function initWebSocket() {
+    websocket = new WebSocket('ws://' + window.location.hostname + '/ws');
+    websocket.onopen = ()=>{ console.log('WS Opened'); };
+    websocket.onclose = ()=>{ console.log('WS Closed'); setTimeout(initWebSocket, 2000); };
+    websocket.onmessage = (event)=>{
+      var data = JSON.parse(event.data);
+      if (data.status) { document.getElementById('status-box').innerText = 'STATUS: ' + data.status; }
+      if (data.vrms != null) { document.getElementById('vrms').innerText = data.vrms.toFixed(1); }
+      if (data.irms != null) { document.getElementById('irms').innerText = data.irms.toFixed(2); }
+      if (data.suggested_energy != null) {
         var slider = document.getElementById('main-pulse-slider');
         slider.value = data.suggested_energy;
         updateSliderVal('main-pulse');
-    }
-    if (data.locked_energy > 0) {
+      }
+      if (data.locked_energy > 0) {
         document.getElementById('ok-btn').style.backgroundColor = '#f1c40f';
         document.getElementById('ok-btn').innerText = 'Terkunci: ' + data.locked_energy + ' Ws';
-    } else {
+      } else {
         document.getElementById('ok-btn').style.backgroundColor = '#2ecc71';
         document.getElementById('ok-btn').innerText = 'Hasil OK 👍 (Kunci)';
-    }
+      }
+    };
   }
+
   function updateSliderVal(id) {
     var mode = document.querySelector('input[name="weld-mode"]:checked').value;
     var slider = document.getElementById(id + '-slider');
@@ -124,6 +128,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     var unit = (id === 'main-pulse' && mode === 'smart') ? ' Ws' : ' ms';
     valSpan.innerText = slider.value + unit;
   }
+
   function updateUI() {
     var mode = document.querySelector('input[name="weld-mode"]:checked').value;
     document.getElementById('pre-pulse-container').classList.add('hidden');
@@ -141,13 +146,16 @@ const char index_html[] PROGMEM = R"rawliteral(
     if (mode === 'smart') {
       mainLabel.innerText = 'Energy';
       mainSlider.min = 50; mainSlider.max = 5000; mainSlider.step = 50;
+      if (mainSlider.value > 5000) mainSlider.value = 5000;
       document.getElementById('feedback-section').classList.remove('hidden');
     } else {
       mainLabel.innerText = 'Main Pulse';
       mainSlider.min = 1; mainSlider.max = 500; mainSlider.step = 1;
+       if (mainSlider.value > 500) mainSlider.value = 500;
     }
     updateSliderVal('main-pulse');
   }
+
   function sendSpotCommand() {
     var data = {
       action: "spot",
@@ -158,12 +166,15 @@ const char index_html[] PROGMEM = R"rawliteral(
     };
     websocket.send(JSON.stringify(data));
   }
+
   function sendFeedback(feedbackType){
     var action = (feedbackType === 'weak') ? 'feedback_weak' : 'feedback_ok';
     websocket.send(JSON.stringify({ action: action }));
   }
+
   window.onload = function(event) {
-    initWebSocket(); updateUI();
+    initWebSocket();
+    updateUI();
     ['pre-pulse', 'gap', 'main-pulse'].forEach(id => updateSliderVal(id));
   }
 </script>
@@ -171,8 +182,39 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
+// ====================================================================================
+// == AKHIR DARI HTML - SEMUA KODE C++ HARUS BERADA DI BAWAH GARIS INI ==
+// ====================================================================================
+
+// --- Deklarasi Fungsi (PENTING untuk menghindari error "not declared in this scope") ---
+void handleSpotCommand(JsonObject doc);
+
 // --- Fungsi Logika Spot Welder ---
-// (Fungsi doWeldPulse dan doEnergyPulse tetap sama seperti sebelumnya)
+void doWeldPulse(int duration_ms) {
+  ws.textAll("{\"status\":\"WELDING...\"}");
+  digitalWrite(WELD_PIN, HIGH);
+  delay(duration_ms);
+  digitalWrite(WELD_PIN, LOW);
+}
+
+void doEnergyPulse(float target_energy_ws) {
+  ws.textAll("{\"status\":\"SMART WELDING...\"}");
+  
+  float cumulative_energy = 0;
+  unsigned long pulse_start_time = millis();
+
+  digitalWrite(WELD_PIN, HIGH);
+
+  while (cumulative_energy < target_energy_ws && (millis() - pulse_start_time) < MAX_PULSE_SAFETY_LIMIT_MS) {
+    emon.calcVI(1, 100); // Lakukan pembacaan cepat
+    float power = emon.Vrms * emon.Irms;
+    unsigned long current_time = millis();
+    float time_elapsed_seconds = (current_time - pulse_start_time) / 1000.0;
+    cumulative_energy = power * time_elapsed_seconds;
+  }
+
+  digitalWrite(WELD_PIN, LOW);
+}
 
 void handleSpotCommand(JsonObject doc) {
   String mode = doc["mode"];
@@ -194,8 +236,7 @@ void sendCurrentState() {
     ws.textAll(json_string);
 }
 
-// --- Handler WebSocket & Setup/Loop ---
-
+// --- Fungsi Handler WebSocket ---
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     Serial.printf("WS client #%u connected\n", client->id());
@@ -225,14 +266,15 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
   }
 }
 
+// --- Fungsi Setup & Loop ---
 void setup() {
   Serial.begin(115200);
   pinMode(WELD_PIN, OUTPUT);
   digitalWrite(WELD_PIN, LOW);
   pinMode(AUTOSPOT_PIN, INPUT_PULLUP); // Set pin autospot
 
-  emon.voltage(VOLTAGE_PIN, 234.26, 1.7);
-  emon.current(CURRENT_PIN, 30);
+  emon.voltage(VOLTAGE_PIN, 234.26, 1.7); // WAJIB DIKALIBRASI
+  emon.current(CURRENT_PIN, 30); // WAJIB DIKALIBRASI (30 untuk ACS712-30A)
 
   WiFi.softAP(ssid, password);
   Serial.print("AP IP address: "); Serial.println(WiFi.softAPIP());
@@ -248,164 +290,22 @@ void setup() {
 void loop() {
   // Cek untuk Autospot
   if (digitalRead(AUTOSPOT_PIN) == LOW) {
-    // Buat JSON doc secara manual untuk memicu las
-    JsonDocument doc;
-    doc["mode"] = "smart"; // Asumsi Autospot selalu pakai mode smart
+    JsonDocument doc; // Buat JSON doc sementara
+    String current_mode_on_web = "smart"; // Ganti ini jika Anda ingin autospot mengikuti mode di web
+    
+    // Kita perlu tahu pengaturan terakhir dari web, tapi untuk simple autospot, kita bisa pakai nilai terkunci/saran
+    doc["mode"] = current_mode_on_web;
+    
     handleSpotCommand(doc.as<JsonObject>());
-    delay(500); // Debounce agar tidak ter-trigger berkali-kali
+    delay(500); // Debounce agar tidak ter-trigger berkali-kali saat saklar ditekan lama
   }
   
-  // Kirim data sensor (tetap berjalan seperti biasa)
-  if (millis() - last_sensor_read > SENSOR_READ_INTERVAL) { /* ... (sama seperti sebelumnya) ... */ }
-}
-    var slider = document.getElementById(id + '-slider');
-    var valSpan = document.getElementById(id + '-val');
-    valSpan.innerText = slider.value + ' ms';
-  }
-
-  function updateUI() {
-    var mode = document.querySelector('input[name="weld-mode"]:checked').value;
-    var prePulseContainer = document.getElementById('pre-pulse-container');
-    var gapContainer = document.getElementById('gap-container');
-
-    if (mode === 'single') {
-      prePulseContainer.classList.add('hidden');
-      gapContainer.classList.add('hidden');
-    } else {
-      prePulseContainer.classList.remove('hidden');
-      gapContainer.classList.remove('hidden');
-    }
-  }
-
-  function sendSpotCommand() {
-    var mode = document.querySelector('input[name="weld-mode"]:checked').value;
-    var pre = document.getElementById('pre-pulse-slider').value;
-    var gap = document.getElementById('gap-slider').value;
-    var main = document.getElementById('main-pulse-slider').value;
-
-    var data = {
-      action: "spot",
-      mode: mode,
-      pre: parseInt(pre),
-      gap: parseInt(gap),
-      main: parseInt(main)
-    };
-    
-    console.log('Sending: ' + JSON.stringify(data));
-    websocket.send(JSON.stringify(data));
-  }
-
-  window.onload = function(event) {
-    initWebSocket();
-    updateUI();
-    updateSliderVal('pre-pulse');
-    updateSliderVal('gap');
-    updateSliderVal('main-pulse');
-  }
-</script>
-</body>
-</html>
-)rawliteral";
-
-
-// --- Fungsi Logika Spot Welder ---
-
-void doWeldPulse(int duration_ms) {
-  ws.textAll("{\"status\":\"WELDING...\"}"); // Kirim status ke semua client
-  digitalWrite(WELD_PIN, HIGH);
-  delay(duration_ms);
-  digitalWrite(WELD_PIN, LOW);
-}
-
-void handleSpotCommand(JsonObject doc) {
-  String mode = doc["mode"];
-  int pre = doc["pre"];
-  int gap = doc["gap"];
-  int main = doc["main"];
-
-  if (mode == "single") {
-    doWeldPulse(main);
-  } 
-  else if (mode == "double") {
-    doWeldPulse(pre);
-    delay(gap);
-    doWeldPulse(main);
-  }
-  else if (mode == "triple") {
-    doWeldPulse(pre);
-    delay(gap);
-    doWeldPulse(main);
-    delay(gap);
-    doWeldPulse(main);
-  }
-
-  ws.textAll("{\"status\":\"IDLE\"}"); // Kembalikan status ke IDLE
-}
-
-
-// --- Fungsi Handler WebSocket ---
-
-void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-  if (type == WS_EVT_CONNECT) {
-    Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-    client->text("{\"status\":\"CONNECTED\"}");
-  } 
-  else if (type == WS_EVT_DISCONNECT) {
-    Serial.printf("WebSocket client #%u disconnected\n", client->id());
-  }
-  else if (type == WS_EVT_DATA) {
-    AwsFrameInfo *info = (AwsFrameInfo*)arg;
-    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-      data[len] = 0;
-      Serial.printf("Received WebSocket data: %s\n", (char*)data);
-      
-      JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, (char*)data);
-      
-      if (error) {
-        Serial.print(F("deserializeJson() failed: "));
-        Serial.println(error.c_str());
-        return;
-      }
-
-      const char* action = doc["action"];
-      if (strcmp(action, "spot") == 0) {
-        handleSpotCommand(doc.as<JsonObject>());
-      }
-    }
+  // Kirim data sensor ke client setiap interval waktu tertentu
+  if (millis() - last_sensor_read > SENSOR_READ_INTERVAL) {
+    last_sensor_read = millis();
+    emon.calcVI(20, 2000); 
+    String json_string = "{\"vrms\":" + String(emon.Vrms) + ", \"irms\":" + String(emon.Irms) + "}";
+    ws.textAll(json_string);
   }
 }
 
-// --- Fungsi Setup & Loop ---
-
-void setup() {
-  Serial.begin(115200);
-  pinMode(WELD_PIN, OUTPUT);
-  digitalWrite(WELD_PIN, LOW);
-
-  Serial.println("Booting...");
-  WiFi.softAP(ssid, password);
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(IP);
-
-  // Daftarkan handler WebSocket
-  ws.onEvent(onWsEvent);
-  server.addHandler(&ws);
-
-  // Route untuk halaman utama
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send_P(200, "text/html", index_html);
-  });
-
-  // Mulai ElegantOTA
-  ElegantOTA.begin(&server);
-
-  // Mulai server
-  server.begin();
-  Serial.println("HTTP server started");
-}
-
-void loop() {
-  // Kosongkan, semua berjalan secara event-based
-}
