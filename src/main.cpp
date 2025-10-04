@@ -12,11 +12,11 @@
 // --- KONFIGURASI ---
 const char* ssid = "MOTsmart SimpleWeld";
 const char* password = "password123";
-const int WELD_PIN = 22;      // Pin trigger SSR/Relay
-const int VOLTAGE_PIN = 35;   // Pin analog untuk ZMPT101B
-const int CURRENT_PIN = 34;   // Pin analog untuk ACS712
-const int AUTOSPOT_PIN = 23; // Pin untuk footswitch/microswitch
-const int MAX_PULSE_SAFETY_LIMIT_MS = 1000; // Batas aman pulsa maksimal 1 detik
+const int WELD_PIN = 22;
+const int VOLTAGE_PIN = 35;
+const int CURRENT_PIN = 34;
+const int AUTOSPOT_PIN = 23;
+const int MAX_PULSE_SAFETY_LIMIT_MS = 1000;
 
 // --- Objek & Variabel Global ---
 AsyncWebServer server(80);
@@ -24,13 +24,11 @@ AsyncWebSocket ws("/ws");
 EnergyMonitor emon;
 unsigned long last_sensor_read = 0;
 const int SENSOR_READ_INTERVAL = 1000;
+float suggested_energy = 400;
+float locked_energy = 0;
+const int ENERGY_ADJUST_STEP = 50;
 
-// Variabel untuk mode Smart-Learn
-float suggested_energy = 400; // Energi awal yang disarankan
-float locked_energy = 0;      // 0 berarti belum dikunci
-const int ENERGY_ADJUST_STEP = 50; // Penambahan/pengurangan energi saat feedback
-
-// --- Halaman Web (HTML, CSS, JavaScript) ---
+// --- Halaman Web (HTML) ---
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
 <head>
@@ -183,10 +181,10 @@ const char index_html[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 // ====================================================================================
-// == AKHIR DARI HTML - SEMUA KODE C++ HARUS BERADA DI BAWAH GARIS INI ==
+// AKHIR DARI HTML - SEMUA KODE C++ HARUS BERADA DI BAWAH GARIS INI
 // ====================================================================================
 
-// --- Deklarasi Fungsi (PENTING untuk menghindari error "not declared in this scope") ---
+// --- Deklarasi Fungsi ---
 void handleSpotCommand(JsonObject doc);
 
 // --- Fungsi Logika Spot Welder ---
@@ -206,7 +204,7 @@ void doEnergyPulse(float target_energy_ws) {
   digitalWrite(WELD_PIN, HIGH);
 
   while (cumulative_energy < target_energy_ws && (millis() - pulse_start_time) < MAX_PULSE_SAFETY_LIMIT_MS) {
-    emon.calcVI(1, 100); // Lakukan pembacaan cepat
+    emon.calcVI(1, 100);
     float power = emon.Vrms * emon.Irms;
     unsigned long current_time = millis();
     float time_elapsed_seconds = (current_time - pulse_start_time) / 1000.0;
@@ -240,7 +238,7 @@ void sendCurrentState() {
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     Serial.printf("WS client #%u connected\n", client->id());
-    sendCurrentState(); // Kirim state saat ini ke client baru
+    sendCurrentState();
   } 
   else if (type == WS_EVT_DISCONNECT) { Serial.printf("WS client #%u disconnected\n", client->id()); }
   else if (type == WS_EVT_DATA) {
@@ -253,7 +251,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         if (strcmp(action, "spot") == 0) {
           handleSpotCommand(doc.as<JsonObject>());
         } else if (strcmp(action, "feedback_weak") == 0) {
-          locked_energy = 0; // Buka kunci jika ada feedback baru
+          locked_energy = 0;
           suggested_energy += ENERGY_ADJUST_STEP;
           if (suggested_energy > 5000) suggested_energy = 5000;
           sendCurrentState();
@@ -271,10 +269,14 @@ void setup() {
   Serial.begin(115200);
   pinMode(WELD_PIN, OUTPUT);
   digitalWrite(WELD_PIN, LOW);
-  pinMode(AUTOSPOT_PIN, INPUT_PULLUP); // Set pin autospot
+  pinMode(AUTOSPOT_PIN, INPUT_PULLUP);
 
-  emon.voltage(VOLTAGE_PIN, 234.26, 1.7); // WAJIB DIKALIBRASI
-  emon.current(CURRENT_PIN, 30); // WAJIB DIKALIBRASI (30 untuk ACS712-30A)
+  // ================================================================
+  // == PERUBAHAN UTAMA DI SINI ==
+  // ================================================================
+  // Mengunci parameter kalibrasi untuk ZMPT101B @ 220V dan ACS712 30A
+  emon.voltage(VOLTAGE_PIN, 445.0, 1.7); // Kalibrasi untuk ZMPT101B di tegangan 220V
+  emon.current(CURRENT_PIN, 30.3);      // Kalibrasi untuk ACS712 30A (sensitivitas 66mV/A)
 
   WiFi.softAP(ssid, password);
   Serial.print("AP IP address: "); Serial.println(WiFi.softAPIP());
@@ -290,17 +292,13 @@ void setup() {
 void loop() {
   // Cek untuk Autospot
   if (digitalRead(AUTOSPOT_PIN) == LOW) {
-    JsonDocument doc; // Buat JSON doc sementara
-    String current_mode_on_web = "smart"; // Ganti ini jika Anda ingin autospot mengikuti mode di web
-    
-    // Kita perlu tahu pengaturan terakhir dari web, tapi untuk simple autospot, kita bisa pakai nilai terkunci/saran
-    doc["mode"] = current_mode_on_web;
-    
+    JsonDocument doc;
+    doc["mode"] = "smart";
     handleSpotCommand(doc.as<JsonObject>());
-    delay(500); // Debounce agar tidak ter-trigger berkali-kali saat saklar ditekan lama
+    delay(500); 
   }
   
-  // Kirim data sensor ke client setiap interval waktu tertentu
+  // Kirim data sensor
   if (millis() - last_sensor_read > SENSOR_READ_INTERVAL) {
     last_sensor_read = millis();
     emon.calcVI(20, 2000); 
@@ -308,4 +306,3 @@ void loop() {
     ws.textAll(json_string);
   }
 }
-
