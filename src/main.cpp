@@ -2,7 +2,7 @@
  * @file main.cpp
  * @author Gemini AI Programmer
  * @brief Firmware for a smart, minimal, and powerful MOT Spot Welder.
- * @version 2.1 (SSR and Sensor Pins Changed)
+ * @version 2.2 (Build Fixed)
  * @date 2025-10-05
  *
  * @copyright Copyright (c) 2025
@@ -11,7 +11,7 @@
  * Director: User
  * Lead Programmer: Gemini AI
  *
- * Pinout Update:
+ * Pinout:
  * - SSR Control -> GPIO 26
  * - ZMPT101B (Zero Cross) -> GPIO 35
  * - ACS712 (Current Sense) -> GPIO 34
@@ -26,11 +26,11 @@
 #include <AsyncTCP.h>
 
 // -----------------------------------------------------------------------------
-// 2. HARDWARE PIN DEFINITIONS  <<<<<<<<< PERUBAHAN DI SINI
+// 2. HARDWARE PIN DEFINITIONS
 // -----------------------------------------------------------------------------
-const int SSR_PIN = 26;          // Pin to control the Solid State Relay (NOW ON GPIO 26)
-const int ZMPT_PIN = 35;         // Analog pin for ZMPT101B (NOW ON GPIO 35)
-const int ACS712_PIN = 34;       // Analog pin for ACS712 (NOW ON GPIO 34)
+const int SSR_PIN = 26;          // Pin to control the Solid State Relay
+const int ZMPT_PIN = 35;         // Analog pin for ZMPT101B
+const int ACS712_PIN = 34;       // Analog pin for ACS712
 const int MACROSWITCH_PIN = 18;  // Pin for the physical weld trigger switch
 
 // -----------------------------------------------------------------------------
@@ -60,7 +60,7 @@ volatile unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50; // 50ms debounce time
 
 // -----------------------------------------------------------------------------
-// 4. WEB INTERFACE (HTML, CSS, JAVASCRIPT)
+// 4. WEB INTERFACE (HTML, CSS, JAVASCRIPT)  <<<<<<<<< BAGIAN INI DIPERBAIKI
 // -----------------------------------------------------------------------------
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
@@ -110,6 +110,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
   function onLoad(event) {
     initWebSocket();
+    initControls();
   }
 
   function initWebSocket() {
@@ -128,7 +129,6 @@ const char index_html[] PROGMEM = R"rawliteral(
   }
 
   function onMessage(event) {
-    console.log(event.data);
     var data = JSON.parse(event.data);
     document.getElementById('statusText').innerHTML = data.status;
     document.getElementById('currentValue').innerHTML = parseFloat(data.current).toFixed(2) + " A";
@@ -141,20 +141,22 @@ const char index_html[] PROGMEM = R"rawliteral(
     }
   }
 
-  var slider = document.getElementById("pulseSlider");
-  var output = document.getElementById("pulseValue");
-  output.innerHTML = slider.value;
+  function initControls(){
+    var slider = document.getElementById("pulseSlider");
+    var output = document.getElementById("pulseValue");
+    output.innerHTML = slider.value;
 
-  slider.oninput = function() {
-    output.innerHTML = this.value;
-  }
+    slider.oninput = function() {
+      output.innerHTML = this.value;
+    }
 
-  slider.onchange = function() {
-    websocket.send("PULSE" + this.value);
-  }
+    slider.onchange = function() {
+      websocket.send("PULSE" + this.value);
+    }
 
-  document.getElementById("spotButton").onclick = function() {
-    websocket.send("SPOT");
+    document.getElementById("spotButton").onclick = function() {
+      websocket.send("SPOT");
+    }
   }
 </script>
 </body>
@@ -346,212 +348,5 @@ void loop() {
       notifyClients("READY", currentAmps);
       lastCurrentRead = millis();
     }
-  }
-}
-    websocket.onmessage = (event)=>{
-      var data = JSON.parse(event.data);
-      if (data.status) { document.getElementById('status-box').innerText = 'STATUS: ' + data.status; }
-      if (data.vrms != null) { document.getElementById('vrms').innerText = data.vrms.toFixed(1); }
-      if (data.irms != null) { document.getElementById('irms').innerText = data.irms.toFixed(2); }
-      if (data.suggested_energy != null) {
-        var slider = document.getElementById('main-pulse-slider');
-        slider.value = data.suggested_energy;
-        updateSliderVal('main-pulse');
-      }
-      if (data.locked_energy > 0) {
-        document.getElementById('ok-btn').style.backgroundColor = '#f1c40f';
-        document.getElementById('ok-btn').innerText = 'Terkunci: ' + data.locked_energy + ' Ws';
-      } else {
-        document.getElementById('ok-btn').style.backgroundColor = '#2ecc71';
-        document.getElementById('ok-btn').innerText = 'Hasil OK 👍 (Kunci)';
-      }
-    };
-  }
-
-  function updateSliderVal(id) {
-    var mode = document.querySelector('input[name="weld-mode"]:checked').value;
-    var slider = document.getElementById(id + '-slider');
-    var valSpan = document.getElementById(id + '-val');
-    var unit = (id === 'main-pulse' && mode === 'smart') ? ' Ws' : ' ms';
-    valSpan.innerText = slider.value + unit;
-  }
-
-  function updateUI() {
-    var mode = document.querySelector('input[name="weld-mode"]:checked').value;
-    document.getElementById('pre-pulse-container').classList.add('hidden');
-    document.getElementById('gap-container').classList.add('hidden');
-    document.getElementById('feedback-section').classList.add('hidden');
-    
-    var mainLabel = document.getElementById('main-label');
-    var mainSlider = document.getElementById('main-pulse-slider');
-    
-    if (mode === 'double') {
-      document.getElementById('pre-pulse-container').classList.remove('hidden');
-      document.getElementById('gap-container').classList.remove('hidden');
-    }
-    
-    if (mode === 'smart') {
-      mainLabel.innerText = 'Energy';
-      mainSlider.min = 50; mainSlider.max = 5000; mainSlider.step = 50;
-      if (mainSlider.value > 5000) mainSlider.value = 5000;
-      document.getElementById('feedback-section').classList.remove('hidden');
-    } else {
-      mainLabel.innerText = 'Main Pulse';
-      mainSlider.min = 1; mainSlider.max = 500; mainSlider.step = 1;
-       if (mainSlider.value > 500) mainSlider.value = 500;
-    }
-    updateSliderVal('main-pulse');
-  }
-
-  function sendSpotCommand() {
-    var data = {
-      action: "spot",
-      mode: document.querySelector('input[name="weld-mode"]:checked').value,
-      pre: parseInt(document.getElementById('pre-pulse-slider').value),
-      gap: parseInt(document.getElementById('gap-slider').value),
-      main: parseInt(document.getElementById('main-pulse-slider').value)
-    };
-    websocket.send(JSON.stringify(data));
-  }
-
-  function sendFeedback(feedbackType){
-    var action = (feedbackType === 'weak') ? 'feedback_weak' : 'feedback_ok';
-    websocket.send(JSON.stringify({ action: action }));
-  }
-
-  window.onload = function(event) {
-    initWebSocket();
-    updateUI();
-    ['pre-pulse', 'gap', 'main-pulse'].forEach(id => updateSliderVal(id));
-  }
-</script>
-</body>
-</html>
-)rawliteral";
-
-// ====================================================================================
-// AKHIR DARI HTML - SEMUA KODE C++ HARUS BERADA DI BAWAH GARIS INI
-// ====================================================================================
-
-// --- Deklarasi Fungsi ---
-void handleSpotCommand(JsonObject doc);
-
-// --- Fungsi Logika Spot Welder ---
-void doWeldPulse(int duration_ms) {
-  ws.textAll("{\"status\":\"WELDING...\"}");
-  digitalWrite(WELD_PIN, HIGH);
-  delay(duration_ms);
-  digitalWrite(WELD_PIN, LOW);
-}
-
-void doEnergyPulse(float target_energy_ws) {
-  ws.textAll("{\"status\":\"SMART WELDING...\"}");
-  
-  float cumulative_energy = 0;
-  unsigned long pulse_start_time = millis();
-
-  digitalWrite(WELD_PIN, HIGH);
-
-  while (cumulative_energy < target_energy_ws && (millis() - pulse_start_time) < MAX_PULSE_SAFETY_LIMIT_MS) {
-    emon.calcVI(1, 100);
-    float power = emon.Vrms * emon.Irms;
-    unsigned long current_time = millis();
-    float time_elapsed_seconds = (current_time - pulse_start_time) / 1000.0;
-    cumulative_energy = power * time_elapsed_seconds;
-  }
-
-  digitalWrite(WELD_PIN, LOW);
-}
-
-void handleSpotCommand(JsonObject doc) {
-  String mode = doc["mode"];
-  
-  if (mode == "single") { doWeldPulse(doc["main"]); } 
-  else if (mode == "double") { doWeldPulse(doc["pre"]); delay(doc["gap"]); doWeldPulse(doc["main"]); }
-  else if (mode == "smart") {
-    float energy = (locked_energy > 0) ? locked_energy : suggested_energy;
-    doEnergyPulse(energy); 
-  }
-
-  emon.calcVI(20, 2000); 
-  String json_string = "{\"status\":\"IDLE\", \"vrms\":" + String(emon.Vrms) + ", \"irms\":" + String(emon.Irms) + "}";
-  ws.textAll(json_string);
-}
-
-void sendCurrentState() {
-    String json_string = "{\"suggested_energy\":" + String(suggested_energy) + ", \"locked_energy\":" + String(locked_energy) + "}";
-    ws.textAll(json_string);
-}
-
-// --- Fungsi Handler WebSocket ---
-void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
-  if (type == WS_EVT_CONNECT) {
-    Serial.printf("WS client #%u connected\n", client->id());
-    sendCurrentState();
-  } 
-  else if (type == WS_EVT_DISCONNECT) { Serial.printf("WS client #%u disconnected\n", client->id()); }
-  else if (type == WS_EVT_DATA) {
-    AwsFrameInfo *info = (AwsFrameInfo*)arg;
-    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-      data[len] = 0;
-      JsonDocument doc;
-      if (deserializeJson(doc, (char*)data) == DeserializationError::Ok) {
-        const char* action = doc["action"];
-        if (strcmp(action, "spot") == 0) {
-          handleSpotCommand(doc.as<JsonObject>());
-        } else if (strcmp(action, "feedback_weak") == 0) {
-          locked_energy = 0;
-          suggested_energy += ENERGY_ADJUST_STEP;
-          if (suggested_energy > 5000) suggested_energy = 5000;
-          sendCurrentState();
-        } else if (strcmp(action, "feedback_ok") == 0) {
-          locked_energy = suggested_energy;
-          sendCurrentState();
-        }
-      }
-    }
-  }
-}
-
-// --- Fungsi Setup & Loop ---
-void setup() {
-  Serial.begin(115200);
-  pinMode(WELD_PIN, OUTPUT);
-  digitalWrite(WELD_PIN, LOW);
-  pinMode(AUTOSPOT_PIN, INPUT_PULLUP);
-
-  // ================================================================
-  // == PERUBAHAN UTAMA DI SINI ==
-  // ================================================================
-  // Mengunci parameter kalibrasi untuk ZMPT101B @ 220V dan ACS712 30A
-  emon.voltage(VOLTAGE_PIN, 445.0, 1.7); // Kalibrasi untuk ZMPT101B di tegangan 220V
-  emon.current(CURRENT_PIN, 30.3);      // Kalibrasi untuk ACS712 30A (sensitivitas 66mV/A)
-
-  WiFi.softAP(ssid, password);
-  Serial.print("AP IP address: "); Serial.println(WiFi.softAPIP());
-
-  ws.onEvent(onWsEvent);
-  server.addHandler(&ws);
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send_P(200, "text/html", index_html); });
-  ElegantOTA.begin(&server);
-  server.begin();
-  Serial.println("HTTP server started");
-}
-
-void loop() {
-  // Cek untuk Autospot
-  if (digitalRead(AUTOSPOT_PIN) == LOW) {
-    JsonDocument doc;
-    doc["mode"] = "smart";
-    handleSpotCommand(doc.as<JsonObject>());
-    delay(500); 
-  }
-  
-  // Kirim data sensor
-  if (millis() - last_sensor_read > SENSOR_READ_INTERVAL) {
-    last_sensor_read = millis();
-    emon.calcVI(20, 2000); 
-    String json_string = "{\"vrms\":" + String(emon.Vrms) + ", \"irms\":" + String(emon.Irms) + "}";
-    ws.textAll(json_string);
   }
 }
