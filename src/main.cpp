@@ -1,104 +1,353 @@
-// WAJIB DI BARIS PALING ATAS
-#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
+/**
+ * @file main.cpp
+ * @author Gemini AI Programmer
+ * @brief Firmware for a smart, minimal, and powerful MOT Spot Welder.
+ * @version 2.1 (SSR and Sensor Pins Changed)
+ * @date 2025-10-05
+ *
+ * @copyright Copyright (c) 2025
+ *
+ * Project: MOTsmart SimpleWeld
+ * Director: User
+ * Lead Programmer: Gemini AI
+ *
+ * Pinout Update:
+ * - SSR Control -> GPIO 26
+ * - ZMPT101B (Zero Cross) -> GPIO 35
+ * - ACS712 (Current Sense) -> GPIO 34
+ */
 
+// -----------------------------------------------------------------------------
+// 1. LIBRARY INCLUDES
+// -----------------------------------------------------------------------------
 #include <Arduino.h>
 #include <WiFi.h>
-#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <ElegantOTA.h>
-#include <ArduinoJson.h>
-#include "EmonLib.h"
+#include <AsyncTCP.h>
 
-// --- KONFIGURASI ---
-const char* ssid = "MOTsmart SimpleWeld";
-const char* password = "password123";
-const int WELD_PIN = 22;
-const int VOLTAGE_PIN = 35;
-const int CURRENT_PIN = 34;
-const int AUTOSPOT_PIN = 23;
-const int MAX_PULSE_SAFETY_LIMIT_MS = 1000;
+// -----------------------------------------------------------------------------
+// 2. HARDWARE PIN DEFINITIONS  <<<<<<<<< PERUBAHAN DI SINI
+// -----------------------------------------------------------------------------
+const int SSR_PIN = 26;          // Pin to control the Solid State Relay (NOW ON GPIO 26)
+const int ZMPT_PIN = 35;         // Analog pin for ZMPT101B (NOW ON GPIO 35)
+const int ACS712_PIN = 34;       // Analog pin for ACS712 (NOW ON GPIO 34)
+const int MACROSWITCH_PIN = 18;  // Pin for the physical weld trigger switch
 
-// --- Objek & Variabel Global ---
+// -----------------------------------------------------------------------------
+// 3. GLOBAL CONFIGURATION & VARIABLES
+// -----------------------------------------------------------------------------
+// WiFi Access Point credentials
+const char* ssid = "MOTsmart_Welder";
+const char* password = NULL; // No password for easy access
+
+// Web Server and WebSockets setup
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
-EnergyMonitor emon;
-unsigned long last_sensor_read = 0;
-const int SENSOR_READ_INTERVAL = 1000;
-float suggested_energy = 400;
-float locked_energy = 0;
-const int ENERGY_ADJUST_STEP = 50;
 
-// --- Halaman Web (HTML) ---
+// Welding parameters
+volatile unsigned int weldPulseDuration = 80; // Default pulse duration in milliseconds
+volatile bool triggerWeld = false;            // Flag to start the welding process
+volatile bool isWelding = false;              // Flag to prevent re-triggering during a weld
+
+// Sensor and timing variables
+int acsOffset = 2048;               // Default ADC value for 0A on ACS712 (will be calibrated)
+float currentAmps = 0.0;            // Calculated current
+const float ADC_SCALE = 3.3 / 4095.0; // ADC voltage scale
+const float ACS712_SENSITIVITY = 0.100; // Sensitivity for ACS712-30A is 100mV/A
+
+// Debouncing for macroswitch
+volatile unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 50; // 50ms debounce time
+
+// -----------------------------------------------------------------------------
+// 4. WEB INTERFACE (HTML, CSS, JAVASCRIPT)
+// -----------------------------------------------------------------------------
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
 <head>
-  <title>MOTsmart SimpleWeld</title>
+  <title>MOTsmart Welder Control</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    :root { --accent-color: #00bcd4; --bg-color: #222; --text-color: #fff; --card-color: #333; --btn-color: #444; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; text-align: center; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 15px;}
-    .card { background-color: var(--card-color); border-radius: 10px; padding: 20px; max-width: 400px; margin: 20px auto; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
-    h1 { color: var(--accent-color); margin-top: 0; }
-    .sensor-readings { display: flex; justify-content: space-around; margin-bottom: 20px; font-size: 1.2rem; }
+    html { font-family: Arial, Helvetica, sans-serif; display: inline-block; text-align: center; }
+    body { max-width: 450px; margin: 0px auto; padding-bottom: 25px; background-color: #1e1e1e; color: #e0e0e0; }
+    h1 { color: #00bcd4; }
     .slider-container { margin: 20px 0; }
-    .slider-label { display: flex; justify-content: space-between; font-size: 1.1rem; margin-bottom: 10px; }
-    input[type=range] { width: 100%; }
-    #spot-btn { background-color: var(--accent-color); color: var(--bg-color); font-size: 1.5rem; font-weight: bold; padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; width: 100%; transition: background-color 0.3s; }
-    #status-box { background-color: var(--bg-color); padding: 15px; margin-top: 20px; border-radius: 5px; font-size: 1.5rem; font-weight: bold; color: #7f8c8d; }
-    .mode-selector { display: flex; justify-content: space-around; background-color: var(--btn-color); border-radius: 5px; padding: 5px; margin-bottom: 20px; }
-    .mode-selector label { padding: 10px; cursor: pointer; flex-grow: 1; border-radius: 5px; transition: all 0.2s; }
-    .mode-selector input { display: none; }
-    .mode-selector input:checked + label { background-color: var(--accent-color); color: var(--bg-color); font-weight: bold; }
-    .feedback-buttons { display: flex; justify-content: space-between; margin-top: 15px; gap: 10px; }
-    .feedback-buttons button { flex-grow: 1; padding: 10px; font-size: 1rem; border: none; border-radius: 5px; cursor: pointer; }
-    #weak-btn { background-color: #e74c3c; color: white; }
-    #ok-btn { background-color: #2ecc71; color: white; }
-    .hidden { display: none; }
-    footer a { color: #555; text-decoration: none; font-size: 0.8rem; }
+    .slider { -webkit-appearance: none; width: 80%; height: 15px; border-radius: 5px; background: #555; outline: none; opacity: 0.7; -webkit-transition: .2s; transition: opacity .2s; }
+    .slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 25px; height: 25px; border-radius: 50%; background: #00bcd4; cursor: pointer; }
+    .slider::-moz-range-thumb { width: 25px; height: 25px; border-radius: 50%; background: #00bcd4; cursor: pointer; }
+    .button { background-color: #d9534f; border: none; color: white; padding: 16px 40px; text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer; border-radius: 8px; }
+    .button-spot { background-color: #00bcd4; }
+    .button-spot:active { background-color: #0097a7; }
+    .status-box { background-color: #333; padding: 15px; border-radius: 8px; margin-top: 20px; }
+    .status-label { font-size: 1.2em; color: #aaa; }
+    .status-value { font-size: 2em; color: #fff; font-weight: bold; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>MOTsmart SimpleWeld</h1>
-    <div class="sensor-readings">
-      <div>Voltage: <span id="vrms">0.0</span> V</div>
-      <div>Current: <span id="irms">0.00</span> A</div>
-    </div>
-    <div class="mode-selector">
-      <input type="radio" id="mode-smart" name="weld-mode" value="smart" checked onchange="updateUI()">
-      <label for="mode-smart">Smart-Learn</label>
-      <input type="radio" id="mode-single" name="weld-mode" value="single" onchange="updateUI()">
-      <label for="mode-single">Single</label>
-      <input type="radio" id="mode-double" name="weld-mode" value="double" onchange="updateUI()">
-      <label for="mode-double">Double</label>
-    </div>
-    <div id="pre-pulse-container" class="slider-container hidden">
-      <div class="slider-label"><span>Pre-Pulse</span><span id="pre-pulse-val">20 ms</span></div>
-      <input type="range" id="pre-pulse-slider" min="1" max="100" value="20" oninput="updateSliderVal('pre-pulse')">
-    </div>
-    <div id="gap-container" class="slider-container hidden">
-      <div class="slider-label"><span>Gap</span><span id="gap-val">40 ms</span></div>
-      <input type="range" id="gap-slider" min="1" max="200" value="40" oninput="updateSliderVal('gap')">
-    </div>
-    <div id="main-pulse-container" class="slider-container">
-      <div class="slider-label"><span id="main-label">Energy</span><span id="main-pulse-val">400 Ws</span></div>
-      <input type="range" id="main-pulse-slider" min="50" max="5000" value="400" step="50" oninput="updateSliderVal('main-pulse')">
-    </div>
-    <button id="spot-btn" onclick="sendSpotCommand()">SPOT</button>
-    <div id="status-box">STATUS: IDLE</div>
-    <div id="feedback-section" class="feedback-buttons">
-        <button id="weak-btn" onclick="sendFeedback('weak')">Kurang Kuat 👎</button>
-        <button id="ok-btn" onclick="sendFeedback('ok')">Hasil OK 👍 (Kunci)</button>
-    </div>
+  <h1>MOTsmart SimpleWeld</h1>
+  
+  <div class="slider-container">
+    <h2>Pulse Duration: <span id="pulseValue">80</span> ms</h2>
+    <input type="range" min="20" max="500" value="80" class="slider" id="pulseSlider">
   </div>
-  <footer><a href="/update">Firmware Update</a></footer>
+  
+  <div>
+    <button id="spotButton" class="button button-spot">SPOT</button>
+  </div>
+  
+  <div class="status-box">
+    <div class="status-label">STATUS</div>
+    <div id="statusText" class="status-value">READY</div>
+    <div class="status-label" style="margin-top:15px;">PRIMARY CURRENT (RMS)</div>
+    <div id="currentValue" class="status-value">0.00 A</div>
+  </div>
 
 <script>
+  var gateway = `ws://${window.location.hostname}/ws`;
   var websocket;
+
+  window.addEventListener('load', onLoad);
+
+  function onLoad(event) {
+    initWebSocket();
+  }
+
   function initWebSocket() {
-    websocket = new WebSocket('ws://' + window.location.hostname + '/ws');
-    websocket.onopen = ()=>{ console.log('WS Opened'); };
-    websocket.onclose = ()=>{ console.log('WS Closed'); setTimeout(initWebSocket, 2000); };
+    console.log('Trying to open a WebSocket connection...');
+    websocket = new WebSocket(gateway);
+    websocket.onopen = onOpen;
+    websocket.onclose = onClose;
+    websocket.onmessage = onMessage;
+  }
+
+  function onOpen(event) { console.log('Connection opened'); }
+  function onClose(event) { 
+    console.log('Connection closed'); 
+    document.getElementById('statusText').innerHTML = "OFFLINE";
+    setTimeout(initWebSocket, 2000); 
+  }
+
+  function onMessage(event) {
+    console.log(event.data);
+    var data = JSON.parse(event.data);
+    document.getElementById('statusText').innerHTML = data.status;
+    document.getElementById('currentValue').innerHTML = parseFloat(data.current).toFixed(2) + " A";
+    if(data.status !== "WELDING...") {
+        document.getElementById('spotButton').disabled = false;
+        document.getElementById('spotButton').style.backgroundColor = '#00bcd4';
+    } else {
+        document.getElementById('spotButton').disabled = true;
+        document.getElementById('spotButton').style.backgroundColor = '#555';
+    }
+  }
+
+  var slider = document.getElementById("pulseSlider");
+  var output = document.getElementById("pulseValue");
+  output.innerHTML = slider.value;
+
+  slider.oninput = function() {
+    output.innerHTML = this.value;
+  }
+
+  slider.onchange = function() {
+    websocket.send("PULSE" + this.value);
+  }
+
+  document.getElementById("spotButton").onclick = function() {
+    websocket.send("SPOT");
+  }
+</script>
+</body>
+</html>
+)rawliteral";
+
+// -----------------------------------------------------------------------------
+// 5. FUNCTION DECLARATIONS & WEBSOCKET HANDLER
+// -----------------------------------------------------------------------------
+void notifyClients(String status, float current) {
+  String json = "{\"status\":\"" + status + "\", \"current\":" + String(current) + "}";
+  ws.textAll(json);
+}
+
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
+  AwsFrameInfo *info = (AwsFrameInfo*)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+    data[len] = 0;
+    String message = (char*)data;
+    
+    if (message.startsWith("PULSE")) {
+      weldPulseDuration = message.substring(5).toInt();
+      Serial.print("Pulse duration set to: ");
+      Serial.println(weldPulseDuration);
+    }
+    
+    if (message == "SPOT") {
+      Serial.println("Weld triggered from web.");
+      if (!isWelding) {
+        triggerWeld = true;
+      }
+    }
+  }
+}
+
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+             void *arg, uint8_t *data, size_t len) {
+  switch (type) {
+    case WS_EVT_CONNECT:
+      Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+      notifyClients(isWelding ? "WELDING..." : "READY", currentAmps);
+      break;
+    case WS_EVT_DISCONNECT:
+      Serial.printf("WebSocket client #%u disconnected\n", client->id());
+      break;
+    case WS_EVT_DATA:
+      handleWebSocketMessage(arg, data, len);
+      break;
+    case WS_EVT_PONG:
+    case WS_EVT_ERROR:
+      break;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 6. INTERRUPT SERVICE ROUTINE (ISR)
+// -----------------------------------------------------------------------------
+void IRAM_ATTR macroswitch_ISR() {
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (!isWelding) {
+      triggerWeld = true;
+    }
+    lastDebounceTime = millis();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 7. SENSOR & WELDING CORE LOGIC
+// -----------------------------------------------------------------------------
+void calibrateAcs() {
+  Serial.println("Calibrating ACS712 sensor... Do not apply current.");
+  long total = 0;
+  for (int i = 0; i < 500; i++) {
+    total += analogRead(ACS712_PIN);
+    delay(1);
+  }
+  acsOffset = total / 500;
+  Serial.print("ACS712 offset calibrated to: ");
+  Serial.println(acsOffset);
+}
+
+void readCurrent() {
+  // Simple RMS calculation - more advanced methods exist but this is good for estimation
+  long total = 0;
+  long start = millis();
+  int count = 0;
+  while(millis() - start < 100) { // Sample over 100ms (5 cycles at 50Hz)
+    total += sq(analogRead(ACS712_PIN) - acsOffset);
+    count++;
+  }
+  
+  float meanSquare = (float)total / count;
+  float rmsAdc = sqrt(meanSquare);
+  float rmsVoltage = rmsAdc * ADC_SCALE;
+  currentAmps = rmsVoltage / ACS712_SENSITIVITY;
+}
+
+void performWeld() {
+  if (triggerWeld && !isWelding) {
+    isWelding = true;
+    triggerWeld = false;
+    
+    Serial.println("Welding process started...");
+    notifyClients("WELDING...", currentAmps);
+
+    // Wait for the next zero-crossing point to start the weld
+    // This simple method polls for the signal to cross the midpoint (approx 2048 for 12-bit ADC)
+    // A rising edge is a good point to start
+    while(analogRead(ZMPT_PIN) > 2048) { delayMicroseconds(10); } // Wait for it to be low
+    while(analogRead(ZMPT_PIN) < 2048) { delayMicroseconds(10); } // Wait for it to rise (zero-cross)
+
+    // --- WELDING PULSE START ---
+    digitalWrite(SSR_PIN, HIGH);
+    
+    unsigned long weldStartTime = millis();
+    while(millis() - weldStartTime < weldPulseDuration) {
+      // We can read current during the weld
+      readCurrent();
+      Serial.print("Current during weld: ");
+      Serial.println(currentAmps);
+      notifyClients("WELDING...", currentAmps);
+      delay(20); // Update current reading every 20ms
+    }
+
+    digitalWrite(SSR_PIN, LOW);
+    // --- WELDING PULSE END ---
+
+    Serial.println("Weld complete.");
+    isWelding = false;
+    readCurrent(); // Read one last time to show resting current
+    notifyClients("READY", currentAmps);
+  }
+}
+
+
+// -----------------------------------------------------------------------------
+// 8. SETUP FUNCTION
+// -----------------------------------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize GPIO pins
+  pinMode(SSR_PIN, OUTPUT);
+  digitalWrite(SSR_PIN, LOW);
+  pinMode(MACROSWITCH_PIN, INPUT_PULLUP);
+  
+  // Attach interrupt for the macroswitch
+  attachInterrupt(digitalPinToInterrupt(MACROSWITCH_PIN), macroswitch_ISR, FALLING);
+
+  // Calibrate current sensor
+  calibrateAcs();
+  
+  // Start WiFi Access Point
+  Serial.print("Starting AP: ");
+  Serial.println(ssid);
+  WiFi.softAP(ssid, password);
+  Serial.print("AP IP address: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Initialize WebSocket
+  ws.onEvent(onEvent);
+  server.addHandler(&ws);
+
+  // Define web server routes
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html);
+  });
+
+  // Start server
+  server.begin();
+  Serial.println("Server started. Ready to weld.");
+}
+
+// -----------------------------------------------------------------------------
+// 9. MAIN LOOP
+// -----------------------------------------------------------------------------
+void loop() {
+  // The main loop is kept clean. Everything is event-driven.
+  
+  ws.cleanupClients(); // Handle disconnected WebSocket clients
+  
+  performWeld(); // Check if a weld needs to be performed
+
+  // Periodically read current when not welding and update clients
+  if (!isWelding) {
+    static unsigned long lastCurrentRead = 0;
+    if (millis() - lastCurrentRead > 1000) { // Update every second
+      readCurrent();
+      notifyClients("READY", currentAmps);
+      lastCurrentRead = millis();
+    }
+  }
+}
     websocket.onmessage = (event)=>{
       var data = JSON.parse(event.data);
       if (data.status) { document.getElementById('status-box').innerText = 'STATUS: ' + data.status; }
