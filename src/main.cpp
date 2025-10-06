@@ -2,7 +2,7 @@
  * @file main.cpp
  * @author Gemini AI Programmer
  * @brief FINAL firmware with all features, including Smart AI Feedback.
- * @version 3.2 (Final - Smart AI Restored & Voltage Calibration Tweak)
+ * @version 3.2 (Final - Smart AI Restored & Voltage Calibration Tweak 0.22)
  * @date 2025-10-06
  *
  * Project: MOTsmart SimpleWeld
@@ -205,7 +205,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   function sendWeldSettings() {
     websocket.send(JSON.stringify({
       action: 'update_weld_settings',
-      mode: document.querySelector('input[name="weld-mode"]:checked').value,
+      mode: document.querySelector('input[name="weld-mode']:checked').value,
       pre: parseInt(document.getElementById('pre-pulse-slider').value),
       gap: parseInt(document.getElementById('gap-slider').value),
       main: parseInt(document.getElementById('main-pulse-slider').value)
@@ -324,15 +324,27 @@ void performWeld() {
     notifyStatus("WELDING...");
 
     unsigned long timeoutStart = millis();
-    while(analogRead(ZMPT_PIN) > zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
-    timeoutStart = millis();
-    while(analogRead(ZMPT_PIN) < zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
+    // Looping sampai ZMPT membaca di atas midpoint (fase positif)
+    while(analogRead(ZMPT_PIN) > zmptMidpoint) { 
+      if(millis() - timeoutStart > 200) { // Safety timeout
+        Serial.println("[WELD] ZMPT ERR: Timeout waiting for positive phase.");
+        notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; 
+      } 
+    }
+    // Looping sampai ZMPT membaca di bawah midpoint (fase negatif, ini adalah zero-cross)
+    timeoutStart = millis(); // Reset timeout
+    while(analogRead(ZMPT_PIN) < zmptMidpoint) { 
+      if(millis() - timeoutStart > 200) { // Safety timeout
+        Serial.println("[WELD] ZMPT ERR: Timeout waiting for negative phase / zero cross.");
+        notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; 
+      } 
+    }
     Serial.println("[WELD] Z-Cross OK.");
 
     if (settings.mode == "double" && settings.pre_pulse_ms > 0) {
         digitalWrite(SSR_PIN, HIGH); delay(settings.pre_pulse_ms); digitalWrite(SSR_PIN, LOW);
         delay(settings.gap_ms);
-        timeoutStart = millis();
+        timeoutStart = millis(); // Reset timeout for second pulse
         while(analogRead(ZMPT_PIN) > zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
         timeoutStart = millis();
         while(analogRead(ZMPT_PIN) < zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
@@ -346,7 +358,7 @@ void performWeld() {
         float current_energy = 0;
         unsigned long last_calc_time = millis();
         while (current_energy < targetEnergy) {
-            emon.calcVI(1, 100);
+            emon.calcVI(1, 100); // Sample more frequently in Smart mode
             float power = emon.Vrms * emon.Irms;
             unsigned long now = millis();
             current_energy += power * ((now - last_calc_time) / 1000.0);
@@ -359,8 +371,8 @@ void performWeld() {
     digitalWrite(SSR_PIN, LOW);
     unsigned long finalPulseDuration = millis() - mainPulseStartTime;
 
-    emon.calcVI(20, 2000);
-    float final_power = emon.Vrms * emon.Irms;
+    emon.calcVI(20, 2000); // Final sampling for overall energy/power
+    float final_power = emon.Vrms * emon.Irms; // Note: Vrms and Irms here reflect last calcVI
     float final_energy = final_power * (finalPulseDuration / 1000.0);
 
     if(settings.mode == "smart") notifyWeldResult(finalPulseDuration, final_energy);
@@ -397,10 +409,10 @@ void setup() {
     
     calibrateSensors();
 
-    // *** KONSTANTA KALIBRASI TEGANGAN DIUBAH MENJADI 0.5 DI SINI ***
-    emon.voltage(ZMPT_PIN, 220.0, 0.5); 
+    // *** KONSTANTA KALIBRASI TEGANGAN DIUBAH MENJADI 0.22 DI SINI ***
+    emon.voltage(ZMPT_PIN, 220.0, 0.22); 
     emon.current(ACS712_PIN, 66.0); // Calibrated for ACS712-30A
-    Serial.println("[SETUP] EmonLib Setup Complete (220V, ACS712-30A, V-calibrated to 0.5).");
+    Serial.println("[SETUP] EmonLib Setup Complete (220V, ACS712-30A, V-calibrated to 0.22).");
     
     WiFi.softAP(ssid);
     Serial.print("[SETUP] AP IP: "); Serial.println(WiFi.softAPIP());
