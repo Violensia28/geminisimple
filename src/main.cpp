@@ -29,7 +29,9 @@ void setup() {
 
     ws.onEvent(onEvent);
     server.addHandler(&ws);
-    server.on("/", HTTP_get, [](AsyncWebServerRequest *request){
+    // INI BARIS YANG SUDAH DIPERBAIKI
+server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+
         request->send_P(200, "text/html", index_html);
     });
 
