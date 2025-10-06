@@ -1,33 +1,26 @@
 /**
  * @file main.cpp
  * @author Gemini AI Programmer
- * @brief FINAL Firmware for MOTsmart Welder with all features and robust diagnostics.
- * @version 3.0 (Final - Feature Complete)
+ * @brief FINAL firmware with all features, including Smart AI Feedback.
+ * @version 3.2 (Final - Smart AI Restored)
  * @date 2025-10-06
  *
- * @copyright Copyright (c) 2025
- *
  * Project: MOTsmart SimpleWeld
- * Director: User
- * Lead Programmer: Gemini AI
  *
  * Features:
- * - ZMPT Auto-Calibration on startup (debug messages included).
- * - ACS712 Auto-Calibration on startup (debug messages included).
- * - OTA (Over-the-Air) Updates via /update endpoint.
- * - Auto Spot trigger based on Vrms and Irms.
- * - Dual Pulse & Single Pulse Modes.
+ * - Smart AI mode with feedback loop ("OK" / "Weak" buttons).
+ * - Auto-calibration for ZMPT & ACS712.
+ * - OTA Updates.
+ * - Auto Spot trigger.
+ * - Dual & Single Pulse modes.
  *
- * Pinout (Standard ESP32 Dev Board):
- * - SSR Control -> GPIO 26
- * - ZMPT101B (Voltage Zero Cross) -> GPIO 35 (ADC1_CH7)
- * - ACS712 (Current Sense) -> GPIO 34 (ADC1_CH6)
- * - Macroswitch -> GPIO 18 (Input_Pullup, Interrupt)
+ * Pinout:
+ * - SSR: GPIO 26
+ * - ZMPT: GPIO 35
+ * - ACS712: GPIO 34
+ * - Macroswitch: GPIO 18
  */
 
-// -----------------------------------------------------------------------------
-// 1. LIBRARY INCLUDES
-// -----------------------------------------------------------------------------
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -36,31 +29,27 @@
 #include "EmonLib.h"
 #include <ElegantOTA.h>
 
-// -----------------------------------------------------------------------------
-// 2. HARDWARE PIN DEFINITIONS
-// -----------------------------------------------------------------------------
+// Pin Definitions
 const int SSR_PIN = 26;
-const int ZMPT_PIN = 35; // ADC1_CH7, pastikan pin ini tidak digunakan untuk hal lain
-const int ACS712_PIN = 34; // ADC1_CH6, pastikan pin ini tidak digunakan untuk hal lain
+const int ZMPT_PIN = 35;
+const int ACS712_PIN = 34;
 const int MACROSWITCH_PIN = 18;
 
-// -----------------------------------------------------------------------------
-// 3. GLOBAL CONFIGURATION & VARIABLES
-// -----------------------------------------------------------------------------
+// Global Config & Variables
 const char* ssid = "MOTsmart_Welder";
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 EnergyMonitor emon;
 
-// Sensor calibration variables
-int zmptMidpoint = 2048; // Default value, will be updated by calibration
-int acsOffset = 2048;    // Default value, will be updated by calibration
+int zmptMidpoint = 2048;
+int acsOffset = 2048;
 
 struct WeldSettings {
   String mode = "double";
   int pre_pulse_ms = 20;
   int gap_ms = 40;
   int main_pulse_ms = 120;
+  int target_energy_ws = 25;
 };
 WeldSettings settings;
 
@@ -68,26 +57,26 @@ struct AutoSpotSettings {
   bool enabled = false;
   float trigThresh_A = 0.8;
   float vCutoff_V = 210.0;
-  float iLimit_A = 35.0; // Overcurrent limit
+  float iLimit_A = 35.0;
 };
 AutoSpotSettings autoSpot;
 
 volatile bool triggerWeld = false;
 volatile bool isWelding = false;
+float last_weld_energy = 0;
+float locked_energy = 0;
 
 volatile unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
 
-// -----------------------------------------------------------------------------
-// 4. WEB INTERFACE (HTML, CSS, JAVASCRIPT)
-// -----------------------------------------------------------------------------
+// Web Interface
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
 <head>
   <title>MOTsmart Welder Control</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    :root { --accent-color: #00bcd4; --bg-color: #1e1e1e; --text-color: #e0e0e0; --card-color: #333; }
+    :root { --accent-color: #00bcd4; --bg-color: #1e1e1e; --text-color: #e0e0e0; --card-color: #333; --success-color: #2ecc71; --warning-color: #f1c40f; --danger-color: #e74c3c;}
     html { font-family: Arial, Helvetica, sans-serif; display: inline-block; text-align: center; }
     body { max-width: 450px; margin: 0px auto; padding-bottom: 25px; background-color: var(--bg-color); color: var(--text-color); }
     h1 { color: var(--accent-color); }
@@ -101,7 +90,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     .button { border: none; color: white; padding: 16px 32px; font-size: 24px; margin: 10px 2px; cursor: pointer; border-radius: 8px; width: 90%; }
     #spot-btn { background-color: var(--accent-color); }
     .mode-selector { display: flex; justify-content: space-around; margin-bottom: 20px; }
-    .mode-selector label { border: 1px solid #555; padding: 10px; border-radius: 5px; width: 45%; }
+    .mode-selector label { border: 1px solid #555; padding: 10px; border-radius: 5px; width: 30%; }
     .mode-selector input[type="radio"] { display: none; }
     .mode-selector input[type="radio"]:checked + label { background-color: var(--accent-color); border-color: var(--accent-color); }
     .toggle-switch { position: relative; display: inline-block; width: 60px; height: 34px; }
@@ -110,16 +99,21 @@ const char index_html[] PROGMEM = R"rawliteral(
     .toggle-slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
     input:checked + .toggle-slider { background-color: var(--accent-color); }
     input:checked + .toggle-slider:before { transform: translateX(26px); }
+    .sensor-readings { font-size: 1.2em; margin-top: 15px; display: flex; justify-content: space-around; }
   </style>
 </head>
 <body>
-  <h1>MOTsmart Welder v3.0</h1>
+  <h1>MOTsmart Welder v3.2</h1>
+  <div class="card">
+    <h2>Sensor Readings</h2>
+    <div class="sensor-readings">
+      <div>Vrms: <span id="vrms-val">0.0</span> V</div>
+      <div>Irms: <span id="irms-val">0.00</span> A</div>
+    </div>
+  </div>
   <div class="card">
     <h2>Auto Spot</h2>
-    <label class="toggle-switch">
-      <input type="checkbox" id="autospot-enabled" onchange="sendAutoSpotSettings()">
-      <span class="toggle-slider"></span>
-    </label>
+    <label class="toggle-switch"><input type="checkbox" id="autospot-enabled" onchange="sendAutoSpotSettings()"><span class="toggle-slider"></span></label>
     <div id="autospot-settings" class="hidden" style="margin-top: 15px;">
       <label>Trigger Current: <input type="number" id="trig-thresh" step="0.1" value="0.8" onchange="sendAutoSpotSettings()"> A</label>
       <label style="margin-top: 10px;">Voltage Cutoff: <input type="number" id="v-cutoff" step="1" value="210" onchange="sendAutoSpotSettings()"> V</label>
@@ -128,28 +122,25 @@ const char index_html[] PROGMEM = R"rawliteral(
   <div class="card">
     <h2>Mode</h2>
     <div class="mode-selector">
-      <input type="radio" id="mode-double" name="weld-mode" value="double" onchange="toggleMode()" checked>
-      <label for="mode-double">Dual</label>
-      <input type="radio" id="mode-single" name="weld-mode" value="single" onchange="toggleMode()">
-      <label for="mode-single">Single</label>
+      <input type="radio" id="mode-double" name="weld-mode" value="double" onchange="toggleMode()" checked><label for="mode-double">Dual</label>
+      <input type="radio" id="mode-single" name="weld-mode" value="single" onchange="toggleMode()"><label for="mode-single">Single</label>
+      <input type="radio" id="mode-smart" name="weld-mode" value="smart" onchange="toggleMode()"><label for="mode-smart">Smart</label>
     </div>
-    <div id="pre-pulse-container" class="slider-container">
-      <label for="pre-pulse-slider">Pre-Pulse: <span id="pre-pulse-val">20</span> ms</label>
-      <input type="range" min="0" max="100" value="20" id="pre-pulse-slider" oninput="updateSliderVal('pre-pulse')" onchange="sendWeldSettings()">
-    </div>
-    <div id="gap-container" class="slider-container">
-      <label for="gap-slider">Gap: <span id="gap-val">40</span> ms</label>
-      <input type="range" min="10" max="200" value="40" id="gap-slider" oninput="updateSliderVal('gap')" onchange="sendWeldSettings()">
-    </div>
-    <div class="slider-container">
-      <label id="main-label" for="main-pulse-slider">Main Pulse: <span id="main-pulse-val">120</span> ms</label>
-      <input type="range" min="20" max="500" value="120" id="main-pulse-slider" oninput="updateSliderVal('main-pulse')" onchange="sendWeldSettings()">
-    </div>
+    <div id="pre-pulse-container" class="slider-container"><label for="pre-pulse-slider">Pre-Pulse: <span id="pre-pulse-val">20</span> ms</label><input type="range" min="0" max="100" value="20" id="pre-pulse-slider" oninput="updateSliderVal('pre-pulse')" onchange="sendWeldSettings()"></div>
+    <div id="gap-container" class="slider-container"><label for="gap-slider">Gap: <span id="gap-val">40</span> ms</label><input type="range" min="10" max="200" value="40" id="gap-slider" oninput="updateSliderVal('gap')" onchange="sendWeldSettings()"></div>
+    <div class="slider-container"><label id="main-label" for="main-pulse-slider">Main Pulse: <span id="main-pulse-val">120</span> ms</label><input type="range" min="20" max="500" value="120" id="main-pulse-slider" oninput="updateSliderVal('main-pulse')" onchange="sendWeldSettings()"></div>
   </div>
   <button id="spot-btn" class="button">SPOT</button>
-  <div class="card">
-      <a href="/update">Firmware Update</a>
+  <div id="feedback-section" class="card hidden">
+    <h2>Hasil Las Terakhir</h2>
+    <div class="sensor-readings">
+        <div>Energi: <span id="energy-val">0.00</span> Ws</div>
+        <div>Durasi: <span id="pulse-val">0</span> ms</div>
+    </div>
+    <button id="ok-btn" class="button" style="background-color:var(--success-color);" onclick="sendFeedback('ok')">Hasil OK 👍 (Kunci)</button>
+    <button class="button" style="background-color:var(--danger-color);" onclick="sendFeedback('weak')">Kurang Kuat 👎</button>
   </div>
+  <div class="card"><a href="/update">Firmware Update</a></div>
 <script>
   let websocket;
   function initWebSocket() {
@@ -161,20 +152,54 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (data.status) {
           const spotBtn = document.getElementById('spot-btn');
           spotBtn.innerText = data.status;
-          if(data.status !== "READY"){ spotBtn.style.backgroundColor = '#f1c40f'; } 
-          else { spotBtn.style.backgroundColor = 'var(--accent-color)'; }
+          spotBtn.style.backgroundColor = (data.status !== "READY") ? 'var(--warning-color)' : 'var(--accent-color)';
+      }
+      if (data.vrms !== undefined) document.getElementById('vrms-val').innerText = data.vrms.toFixed(1);
+      if (data.irms !== undefined) document.getElementById('irms-val').innerText = data.irms.toFixed(2);
+      if (data.energy !== undefined) {
+          document.getElementById('energy-val').innerText = data.energy.toFixed(2);
+          document.getElementById('feedback-section').classList.remove('hidden');
+      }
+      if (data.pulse !== undefined) document.getElementById('pulse-val').innerText = data.pulse;
+      if (data.locked_energy !== undefined) {
+          const okBtn = document.getElementById('ok-btn');
+          if (data.locked_energy > 0) {
+              okBtn.innerText = `Terkunci: ${data.locked_energy.toFixed(2)} Ws`;
+              okBtn.style.backgroundColor = 'var(--warning-color)';
+          } else {
+              okBtn.innerText = 'Hasil OK 👍 (Kunci)';
+              okBtn.style.backgroundColor = 'var(--success-color)';
+          }
       }
     };
   }
   function updateSliderVal(id) {
     const slider = document.getElementById(id + '-slider');
     const valSpan = document.getElementById(id + '-val');
-    valSpan.innerText = slider.value + ' ms';
+    const mode = document.querySelector('input[name="weld-mode"]:checked').value;
+    const unit = (id === 'main-pulse' && mode === 'smart') ? ' Ws' : ' ms';
+    valSpan.innerText = slider.value + unit;
   }
   function toggleMode() {
     const mode = document.querySelector('input[name="weld-mode"]:checked').value;
-    document.getElementById('pre-pulse-container').classList.toggle('hidden', mode !== 'double');
-    document.getElementById('gap-container').classList.toggle('hidden', mode !== 'double');
+    const prePulse = document.getElementById('pre-pulse-container');
+    const gap = document.getElementById('gap-container');
+    const feedback = document.getElementById('feedback-section');
+    const mainLabel = document.getElementById('main-label');
+    const mainSlider = document.getElementById('main-pulse-slider');
+
+    prePulse.classList.toggle('hidden', mode !== 'double');
+    gap.classList.toggle('hidden', mode !== 'double');
+    feedback.classList.toggle('hidden', mode !== 'smart');
+
+    if (mode === 'smart') {
+      mainLabel.childNodes[0].nodeValue = 'Target Energi: ';
+      mainSlider.min = 5; mainSlider.max = 100; mainSlider.value = 25;
+    } else {
+      mainLabel.childNodes[0].nodeValue = 'Main Pulse: ';
+      mainSlider.min = 20; mainSlider.max = 500; mainSlider.value = 120;
+    }
+    updateSliderVal('main-pulse');
     sendWeldSettings();
   }
   function sendWeldSettings() {
@@ -196,6 +221,9 @@ const char index_html[] PROGMEM = R"rawliteral(
       document.getElementById('autospot-settings').classList.toggle('hidden', !settings.enabled);
       websocket.send(JSON.stringify(settings));
   }
+  function sendFeedback(type) {
+    websocket.send(JSON.stringify({ action: `feedback_${type}` }));
+  }
   window.onload = () => {
     initWebSocket();
     document.getElementById('spot-btn').onclick = () => websocket.send(JSON.stringify({ action: 'spot' }));
@@ -207,24 +235,40 @@ const char index_html[] PROGMEM = R"rawliteral(
 </body></html>
 )rawliteral";
 
-// -----------------------------------------------------------------------------
-// 5. HELPER FUNCTIONS & WEBSOCKET HANDLER
-// -----------------------------------------------------------------------------
-void notifyClients(float vrms, float irms) {
+// Helper Functions & WebSocket Handler
+void notifyStatus(const char* status) {
     JsonDocument doc;
-    doc["vrms"] = vrms;
-    doc["irms"] = irms;
+    doc["status"] = status;
     String json;
     serializeJson(doc, json);
     ws.textAll(json);
+}
+
+void notifyClients(float vrms, float irms, float lockedEnergy) {
+    JsonDocument doc;
+    doc["vrms"] = vrms;
+    doc["irms"] = irms;
+    doc["locked_energy"] = lockedEnergy;
+    String json;
+    serializeJson(doc, json);
+    ws.textAll(json);
+}
+
+void notifyWeldResult(unsigned long final_pulse, float energy) {
+    JsonDocument doc;
+    doc["pulse"] = final_pulse;
+    doc["energy"] = energy;
+    String json;
+    serializeJson(doc, json);
+    ws.textAll(json);
+    last_weld_energy = energy;
 }
 
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
         JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, data, len);
-        if (error) { return; }
+        if (deserializeJson(doc, data, len)) return;
 
         const char* action = doc["action"];
         if (strcmp(action, "spot") == 0) {
@@ -235,11 +279,21 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
                 settings.pre_pulse_ms = doc["pre"];
                 settings.gap_ms = doc["gap"];
             }
-            settings.main_pulse_ms = doc["main"];
+            if (settings.mode == "smart") {
+                settings.target_energy_ws = doc["main"];
+            } else {
+                settings.main_pulse_ms = doc["main"];
+            }
         } else if (strcmp(action, "update_autospot_settings") == 0) {
             autoSpot.enabled = doc["enabled"];
             autoSpot.trigThresh_A = doc["trigThresh"];
             autoSpot.vCutoff_V = doc["vCutoff"];
+        } else if (strcmp(action, "feedback_ok") == 0) {
+            locked_energy = last_weld_energy;
+            notifyClients(emon.Vrms, emon.Irms, locked_energy);
+        } else if (strcmp(action, "feedback_weak") == 0) {
+            locked_energy = 0;
+            notifyClients(emon.Vrms, emon.Irms, locked_energy);
         }
     }
 }
@@ -249,194 +303,137 @@ void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType 
         case WS_EVT_CONNECT: Serial.printf("Client #%u connected\n", client->id()); break;
         case WS_EVT_DISCONNECT: Serial.printf("Client #%u disconnected\n", client->id()); break;
         case WS_EVT_DATA: handleWebSocketMessage(arg, data, len); break;
-        case WS_EVT_PONG: 
-        case WS_EVT_ERROR:
-            break;
+        case WS_EVT_PONG: case WS_EVT_ERROR: break;
     }
 }
 
-// -----------------------------------------------------------------------------
-// 6. INTERRUPT SERVICE ROUTINE (ISR)
-// -----------------------------------------------------------------------------
+// Interrupt Service Routine (ISR)
 void IRAM_ATTR macroswitch_ISR() {
     if ((millis() - lastDebounceTime) > debounceDelay) {
-        if (!isWelding && !autoSpot.enabled) {
-            triggerWeld = true;
-        }
+        if (!isWelding && !autoSpot.enabled) triggerWeld = true;
         lastDebounceTime = millis();
     }
 }
 
-// -----------------------------------------------------------------------------
-// 7. WELDING CORE LOGIC
-// -----------------------------------------------------------------------------
+// Welding Core Logic
 void performWeld() {
     if (!triggerWeld || isWelding) return;
     isWelding = true;
 
-    Serial.println("[WELD] Initiating weld sequence...");
-    ws.textAll("{\"status\":\"WELDING...\"}");
+    Serial.println("[WELD] Initiating...");
+    notifyStatus("WELDING...");
 
     unsigned long timeoutStart = millis();
-    Serial.println("[WELD] Waiting for ZMPT zero-crossing (rising edge)...");
-    // Wait for the voltage to go below midpoint, then above, to catch rising zero-crossing
-    while(analogRead(ZMPT_PIN) > zmptMidpoint) { 
-        if(millis() - timeoutStart > 200) { // Increased timeout for safety
-            Serial.println("[WELD ERROR] ZMPT timeout during pre-zero-cross wait.");
-            ws.textAll("{\"status\":\"ZMPT ERR\"}"); 
-            isWelding = false; triggerWeld = false; return; 
-        } 
-    }
-    timeoutStart = millis(); // Reset timeout for the next wait
-    while(analogRead(ZMPT_PIN) < zmptMidpoint) { 
-        if(millis() - timeoutStart > 200) { // Increased timeout for safety
-            Serial.println("[WELD ERROR] ZMPT timeout during zero-cross wait.");
-            ws.textAll("{\"status\":\"ZMPT ERR\"}"); 
-            isWelding = false; triggerWeld = false; return; 
-        } 
-    }
-    Serial.println("[WELD] ZMPT zero-crossing detected.");
+    while(analogRead(ZMPT_PIN) > zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
+    timeoutStart = millis();
+    while(analogRead(ZMPT_PIN) < zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
+    Serial.println("[WELD] Z-Cross OK.");
 
-
-    // Pre-pulse if in double mode
     if (settings.mode == "double" && settings.pre_pulse_ms > 0) {
-        Serial.printf("[WELD] Pre-pulse (%d ms) started.\n", settings.pre_pulse_ms);
-        digitalWrite(SSR_PIN, HIGH);
-        delay(settings.pre_pulse_ms);
-        digitalWrite(SSR_PIN, LOW);
-        Serial.printf("[WELD] Pre-pulse ended. Gap (%d ms) started.\n", settings.gap_ms);
+        digitalWrite(SSR_PIN, HIGH); delay(settings.pre_pulse_ms); digitalWrite(SSR_PIN, LOW);
         delay(settings.gap_ms);
-        
-        Serial.println("[WELD] Waiting for ZMPT zero-crossing before main pulse...");
-        timeoutStart = millis(); // Reset timeout for next wait
-        while(analogRead(ZMPT_PIN) > zmptMidpoint) { 
-            if(millis() - timeoutStart > 200) { 
-                Serial.println("[WELD ERROR] ZMPT timeout before main pulse.");
-                ws.textAll("{\"status\":\"ZMPT ERR\"}"); 
-                isWelding = false; triggerWeld = false; return; 
-            } 
-        }
-        timeoutStart = millis(); // Reset timeout for next wait
-        while(analogRead(ZMPT_PIN) < zmptMidpoint) { 
-            if(millis() - timeoutStart > 200) { 
-                Serial.println("[WELD ERROR] ZMPT timeout before main pulse.");
-                ws.textAll("{\"status\":\"ZMPT ERR\"}"); 
-                isWelding = false; triggerWeld = false; return; 
-            } 
-        }
-        Serial.println("[WELD] ZMPT zero-crossing for main pulse detected.");
+        timeoutStart = millis();
+        while(analogRead(ZMPT_PIN) > zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
+        timeoutStart = millis();
+        while(analogRead(ZMPT_PIN) < zmptMidpoint) { if(millis() - timeoutStart > 200) { notifyStatus("ZMPT ERR"); isWelding = false; triggerWeld = false; return; } }
     }
 
-    // Main Pulse
-    Serial.printf("[WELD] Main pulse (%d ms) started.\n", settings.main_pulse_ms);
+    unsigned long mainPulseStartTime = millis();
     digitalWrite(SSR_PIN, HIGH);
-    delay(settings.main_pulse_ms);
+    
+    float targetEnergy = (locked_energy > 0) ? locked_energy : (float)settings.target_energy_ws;
+    if (settings.mode == "smart") {
+        float current_energy = 0;
+        unsigned long last_calc_time = millis();
+        while (current_energy < targetEnergy) {
+            emon.calcVI(1, 100);
+            float power = emon.Vrms * emon.Irms;
+            unsigned long now = millis();
+            current_energy += power * ((now - last_calc_time) / 1000.0);
+            last_calc_time = now;
+            if (now - mainPulseStartTime > 1000) break; // 1 second safety timeout
+        }
+    } else {
+        delay(settings.main_pulse_ms);
+    }
     digitalWrite(SSR_PIN, LOW);
-    Serial.println("[WELD] Main pulse ended.");
+    unsigned long finalPulseDuration = millis() - mainPulseStartTime;
+
+    emon.calcVI(20, 2000);
+    float final_power = emon.Vrms * emon.Irms;
+    float final_energy = final_power * (finalPulseDuration / 1000.0);
+
+    if(settings.mode == "smart") notifyWeldResult(finalPulseDuration, final_energy);
     
-    ws.textAll("{\"status\":\"READY\"}");
-    Serial.println("[WELD] Welding sequence complete. System READY.");
-    
+    notifyStatus("READY");
+    Serial.printf("[WELD] Done. Duration: %lu ms, Energy: %.2f Ws\n", finalPulseDuration, final_energy);
     isWelding = false;
     triggerWeld = false;
 }
 
-// -----------------------------------------------------------------------------
-// 8. SETUP FUNCTION
-// -----------------------------------------------------------------------------
+// Setup Function
 void calibrateSensors() {
-    Serial.println("[SETUP] Calibrating ZMPT sensor midpoint...");
+    Serial.println("[SETUP] Calibrating ZMPT...");
     long zmptTotal = 0;
-    // Increased calibration samples for better accuracy
-    for (int i = 0; i < 1000; i++) { 
-        zmptTotal += analogRead(ZMPT_PIN);
-        delay(1);
-    }
+    for (int i = 0; i < 1000; i++) { zmptTotal += analogRead(ZMPT_PIN); delay(1); }
     zmptMidpoint = zmptTotal / 1000;
-    Serial.printf("[SETUP] ZMPT midpoint calibrated to: %d\n", zmptMidpoint);
+    Serial.printf("[SETUP] ZMPT midpoint: %d\n", zmptMidpoint);
 
-    Serial.println("[SETUP] Calibrating ACS712 sensor offset (no current)...");
+    Serial.println("[SETUP] Calibrating ACS712...");
     long acsTotal = 0;
-    // Increased calibration samples for better accuracy
-    for (int i = 0; i < 1000; i++) { 
-        acsTotal += analogRead(ACS712_PIN);
-        delay(1);
-    }
+    for (int i = 0; i < 1000; i++) { acsTotal += analogRead(ACS712_PIN); delay(1); }
     acsOffset = acsTotal / 1000;
-    Serial.printf("[SETUP] ACS712 offset calibrated to: %d\n", acsOffset);
-    Serial.println("[SETUP] NOTE: Ensure no current is flowing through ACS712 during calibration.");
+    Serial.printf("[SETUP] ACS712 offset: %d\n", acsOffset);
 }
 
 void setup() {
     Serial.begin(115200);
-    delay(1000); // Give 1 second for Serial Monitor to prepare
-    Serial.println("\n\n--- MOTsmart Welder Boot Sequence Initiated (v3.0) ---");
+    delay(1000);
+    Serial.println("\n\n--- MOTsmart Welder Boot Sequence (v3.2) ---");
 
-    Serial.println("[SETUP] Initializing Pins...");
-    pinMode(SSR_PIN, OUTPUT);
-    digitalWrite(SSR_PIN, LOW);
+    pinMode(SSR_PIN, OUTPUT); digitalWrite(SSR_PIN, LOW);
     pinMode(MACROSWITCH_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(MACROSWITCH_PIN), macroswitch_ISR, FALLING);
-    Serial.println("[SETUP] Pin Initialization Complete.");
+    
+    calibrateSensors();
 
-    calibrateSensors(); // Will print its own debug messages
-
-    Serial.println("[SETUP] Setting up EmonLib...");
-    // Adjust 230.0 for your nominal line voltage, and 1.7 calibration constant for ZMPT
-    // Adjust 30.0 for your specific ACS712 module (e.g., 66 for 20A module, 100 for 30A module, etc.)
-    emon.voltage(ZMPT_PIN, 230.0, 1.7); 
-    emon.current(ACS712_PIN, 30.0);    
-    Serial.println("[SETUP] EmonLib Setup Complete.");
-
-    Serial.println("[SETUP] Starting WiFi Access Point...");
+    emon.voltage(ZMPT_PIN, 220.0, 1.7);
+    emon.current(ACS712_PIN, 66.0); // Calibrated for ACS712-30A
+    
     WiFi.softAP(ssid);
-    IPAddress IP = WiFi.softAPIP();
-    Serial.print("[SETUP] AP IP address: ");
-    Serial.println(IP);
-    Serial.printf("[SETUP] WiFi AP '%s' Started Successfully!\n", ssid);
+    Serial.print("[SETUP] AP IP: "); Serial.println(WiFi.softAPIP());
 
     ws.onEvent(onEvent);
     server.addHandler(&ws);
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-        request->send_P(200, "text/html", index_html);
-    });
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send_P(200, "text/html", index_html); });
     
     ElegantOTA.begin(&server);
-    
     server.begin();
-    Serial.println("[SETUP] Web Server started. OTA available at /update");
-    Serial.println("===================================");
-    Serial.println("--- MOTsmart Welder System READY ---");
-    Serial.println("===================================");
+    Serial.println("[SETUP] System READY.");
 }
 
-// -----------------------------------------------------------------------------
-// 9. MAIN LOOP
-// -----------------------------------------------------------------------------
+// Main Loop
 void loop() {
     ws.cleanupClients();
     performWeld();
     ElegantOTA.loop();
 
     static unsigned long lastSensorRead = 0;
-    // Read sensors and update web UI every 250ms
     if (millis() - lastSensorRead > 250) {
-        emon.calcVI(20, 2000); // Read 20 cycles of AC, with 2000ms timeout
+        emon.calcVI(20, 2000);
         
         if (autoSpot.enabled && !isWelding) {
-            // Only trigger auto-spot if current is above threshold, voltage is good, and not over current limit
             if (emon.Irms > autoSpot.trigThresh_A && emon.Vrms >= autoSpot.vCutoff_V && emon.Irms < autoSpot.iLimit_A) {
-                Serial.printf("[AUTOSPOT] Triggered: Irms=%.2fA, Vrms=%.2fV\n", emon.Irms, emon.Vrms);
                 triggerWeld = true;
             }
         }
         
         static unsigned long lastNotify = 0;
-        // Send updates to clients every 1 second
         if(millis() - lastNotify > 1000){
-            notifyClients(emon.Vrms, emon.Irms);
+            notifyClients(emon.Vrms, emon.Irms, locked_energy);
             lastNotify = millis();
         }
         lastSensorRead = millis();
     }
 }
+
