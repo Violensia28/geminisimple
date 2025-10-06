@@ -1,8 +1,8 @@
 /**
  * @file main.cpp
  * @author Gemini AI Programmer
- * @brief Final firmware with build fix for EmonLib.
- * @version 2.8 (Final Build Fix)
+ * @brief Final firmware with build fix for WebSocket event handler.
+ * @version 2.9 (Final Build Fix)
  * @date 2025-10-06
  *
  * @copyright Copyright (c) 2025
@@ -12,11 +12,10 @@
  * Lead Programmer: Gemini AI
  *
  * Features:
- * - ZMPT Auto-Calibration on startup.
- * - ACS712 Auto-Calibration on startup.
- * - OTA (Over-the-Air) Updates via /update endpoint.
- * - Auto Spot trigger based on Vrms and Irms.
- * - Dual Pulse & Single Pulse Modes.
+ * - All sensors auto-calibrated.
+ * - OTA Updates enabled.
+ * - Auto Spot trigger enabled.
+ * - Dual/Single Pulse modes.
  *
  * Pinout:
  * - SSR Control -> GPIO 26
@@ -51,11 +50,8 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 EnergyMonitor emon;
 
-// Sensor calibration variables
 int zmptMidpoint = 2048;
-// Nilai offset ACS712 tidak lagi digunakan secara langsung oleh EmonLib
-// Namun tetap penting untuk kalkulasi manual jika diperlukan.
-int acsOffset = 2048; 
+int acsOffset = 2048;
 
 struct WeldSettings {
   String mode = "double";
@@ -114,8 +110,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <h1>MOTsmart Welder v2.8</h1>
-
+  <h1>MOTsmart Welder v2.9</h1>
   <div class="card">
     <h2>Auto Spot</h2>
     <label class="toggle-switch">
@@ -127,7 +122,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       <label style="margin-top: 10px;">Voltage Cutoff: <input type="number" id="v-cutoff" step="1" value="210" onchange="sendAutoSpotSettings()"> V</label>
     </div>
   </div>
-
   <div class="card">
     <h2>Mode</h2>
     <div class="mode-selector">
@@ -153,10 +147,8 @@ const char index_html[] PROGMEM = R"rawliteral(
   <div class="card">
       <a href="/update">Firmware Update</a>
   </div>
-  
 <script>
   let websocket;
-
   function initWebSocket() {
     websocket = new WebSocket(`ws://${window.location.hostname}/ws`);
     websocket.onopen = (event) => { console.log('Connected'); };
@@ -166,50 +158,41 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (data.status) {
           const spotBtn = document.getElementById('spot-btn');
           spotBtn.innerText = data.status;
-          if(data.status !== "READY"){
-              spotBtn.style.backgroundColor = '#f1c40f';
-          } else {
-              spotBtn.style.backgroundColor = 'var(--accent-color)';
-          }
+          if(data.status !== "READY"){ spotBtn.style.backgroundColor = '#f1c40f'; } 
+          else { spotBtn.style.backgroundColor = 'var(--accent-color)'; }
       }
     };
   }
-
   function updateSliderVal(id) {
     const slider = document.getElementById(id + '-slider');
     const valSpan = document.getElementById(id + '-val');
     valSpan.innerText = slider.value + ' ms';
   }
-  
   function toggleMode() {
     const mode = document.querySelector('input[name="weld-mode"]:checked').value;
     document.getElementById('pre-pulse-container').classList.toggle('hidden', mode !== 'double');
     document.getElementById('gap-container').classList.toggle('hidden', mode !== 'double');
     sendWeldSettings();
   }
-
   function sendWeldSettings() {
-    const settings = {
+    websocket.send(JSON.stringify({
       action: 'update_weld_settings',
       mode: document.querySelector('input[name="weld-mode"]:checked').value,
       pre: parseInt(document.getElementById('pre-pulse-slider').value),
       gap: parseInt(document.getElementById('gap-slider').value),
       main: parseInt(document.getElementById('main-pulse-slider').value)
-    };
-    websocket.send(JSON.stringify(settings));
+    }));
   }
-
   function sendAutoSpotSettings() {
-      const autoSettings = {
+      const settings = {
           action: 'update_autospot_settings',
           enabled: document.getElementById('autospot-enabled').checked,
           trigThresh: parseFloat(document.getElementById('trig-thresh').value),
           vCutoff: parseFloat(document.getElementById('v-cutoff').value)
       };
-      document.getElementById('autospot-settings').classList.toggle('hidden', !autoSettings.enabled);
-      websocket.send(JSON.stringify(autoSettings));
+      document.getElementById('autospot-settings').classList.toggle('hidden', !settings.enabled);
+      websocket.send(JSON.stringify(settings));
   }
-
   window.onload = () => {
     initWebSocket();
     document.getElementById('spot-btn').onclick = () => websocket.send(JSON.stringify({ action: 'spot' }));
@@ -258,11 +241,21 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     }
 }
 
-void onEvent(AsyncWebServer *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+// <<<<<<<<<<< PERUBAHAN DI SINI
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     switch (type) {
-        case WS_EVT_CONNECT: Serial.printf("Client #%u connected\n", client->id()); break;
-        case WS_EVT_DISCONNECT: Serial.printf("Client #%u disconnected\n", client->id()); break;
-        case WS_EVT_DATA: handleWebSocketMessage(arg, data, len); break;
+        case WS_EVT_CONNECT:
+            Serial.printf("Client #%u connected\n", client->id());
+            break;
+        case WS_EVT_DISCONNECT:
+            Serial.printf("Client #%u disconnected\n", client->id());
+            break;
+        case WS_EVT_DATA:
+            handleWebSocketMessage(arg, data, len);
+            break;
+        case WS_EVT_PONG:
+        case WS_EVT_ERROR:
+            break;
     }
 }
 
@@ -325,8 +318,7 @@ void calibrateSensors() {
     zmptMidpoint = zmptTotal / 500;
     Serial.print("ZMPT midpoint calibrated to: ");
     Serial.println(zmptMidpoint);
-
-    // Kalibrasi ACS712 tetap dilakukan untuk mendapatkan nilai offset
+    
     Serial.println("Calibrating ACS712 sensor offset...");
     long acsTotal = 0;
     for (int i = 0; i < 500; i++) {
@@ -346,19 +338,16 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(MACROSWITCH_PIN), macroswitch_ISR, FALLING);
     
     calibrateSensors();
-
-    // Setup EmonLib.
-    // Library ini secara internal akan menghitung offset-nya sendiri saat calcVI,
-    // jadi kita tidak perlu memasukkan `acsOffset` hasil kalibrasi kita.
+    
     emon.voltage(ZMPT_PIN, 230.0, 1.7);
-    emon.current(ACS712_PIN, 30.0); // Cukup 2 parameter
+    emon.current(ACS712_PIN, 30.0);
 
     WiFi.softAP(ssid);
     IPAddress IP = WiFi.softAPIP();
     Serial.print("AP IP address: ");
     Serial.println(IP);
 
-    ws.onEvent(onEvent);
+    ws.onEvent(onEvent); // <<<<<<<<<<< Pemanggilan fungsi ini yang menyebabkan error
     server.addHandler(&ws);
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
         request->send_P(200, "text/html", index_html);
@@ -396,3 +385,4 @@ void loop() {
         lastSensorRead = millis();
     }
 }
+
