@@ -5,19 +5,24 @@ const char* ssid = "MOTsmart_Welder_TEST";
 
 void setup() {
   Serial.begin(115200);
-  delay(1000); // Beri jeda 1 detik agar Serial Monitor siap
-  Serial.println("\n\n--- Memulai Tes WiFi Minimalis ---");
+  delay(1000); // Give 1 second for Serial Monitor to prepare
+  Serial.println("\n\n--- Starting Minimal WiFi Test on BARE ESP32 ---");
 
-  WiFi.softAP(ssid);
+  // Initialize WiFi in AP mode
+  bool wifiStarted = WiFi.softAP(ssid);
 
-  Serial.println("--- Access Point Seharusnya Aktif Sekarang ---");
-  Serial.print("Nama WiFi (SSID): ");
-  Serial.println(ssid);
-  Serial.print("Alamat IP: ");
-  Serial.println(WiFi.softAPIP());
+  if (wifiStarted) {
+    Serial.println("--- Access Point Should Be Active Now ---");
+    Serial.print("WiFi SSID: ");
+    Serial.println(ssid);
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println("!!! FAILED TO START WIFI ACCESS POINT !!!");
+  }
   Serial.println("===============================");
 }
 
 void loop() {
-  // Biarkan kosong
+  // Empty loop
 }
