@@ -1,8 +1,8 @@
 /**
  * @file main.cpp
  * @author Gemini AI Programmer
- * @brief Final firmware with all features and full sensor auto-calibration.
- * @version 2.7 (Final - OTA + ZMPT & ACS712 Auto-Calibration)
+ * @brief Final firmware with build fix for EmonLib.
+ * @version 2.8 (Final Build Fix)
  * @date 2025-10-06
  *
  * @copyright Copyright (c) 2025
@@ -53,7 +53,9 @@ EnergyMonitor emon;
 
 // Sensor calibration variables
 int zmptMidpoint = 2048;
-int acsOffset = 2048;
+// Nilai offset ACS712 tidak lagi digunakan secara langsung oleh EmonLib
+// Namun tetap penting untuk kalkulasi manual jika diperlukan.
+int acsOffset = 2048; 
 
 struct WeldSettings {
   String mode = "double";
@@ -112,7 +114,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <h1>MOTsmart Welder v2.7</h1>
+  <h1>MOTsmart Welder v2.8</h1>
 
   <div class="card">
     <h2>Auto Spot</h2>
@@ -256,7 +258,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     }
 }
 
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+void onEvent(AsyncWebServer *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     switch (type) {
         case WS_EVT_CONNECT: Serial.printf("Client #%u connected\n", client->id()); break;
         case WS_EVT_DISCONNECT: Serial.printf("Client #%u disconnected\n", client->id()); break;
@@ -324,6 +326,7 @@ void calibrateSensors() {
     Serial.print("ZMPT midpoint calibrated to: ");
     Serial.println(zmptMidpoint);
 
+    // Kalibrasi ACS712 tetap dilakukan untuk mendapatkan nilai offset
     Serial.println("Calibrating ACS712 sensor offset...");
     long acsTotal = 0;
     for (int i = 0; i < 500; i++) {
@@ -342,12 +345,13 @@ void setup() {
     pinMode(MACROSWITCH_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(MACROSWITCH_PIN), macroswitch_ISR, FALLING);
     
-    // Lakukan kalibrasi kedua sensor saat startup
     calibrateSensors();
 
-    // Setup EmonLib dengan nilai offset ACS712 yang sudah dikalibrasi
+    // Setup EmonLib.
+    // Library ini secara internal akan menghitung offset-nya sendiri saat calcVI,
+    // jadi kita tidak perlu memasukkan `acsOffset` hasil kalibrasi kita.
     emon.voltage(ZMPT_PIN, 230.0, 1.7);
-    emon.current(ACS712_PIN, 30.0, acsOffset); // Gunakan offset hasil kalibrasi
+    emon.current(ACS712_PIN, 30.0); // Cukup 2 parameter
 
     WiFi.softAP(ssid);
     IPAddress IP = WiFi.softAPIP();
