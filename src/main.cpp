@@ -397,7 +397,7 @@ void setup() {
     
     calibrateSensors();
 
-    emon.voltage(ZMPT_PIN, 220.0, 1.7);
+    emon.voltage(ZMPT_PIN, 220.0, 0.8);
     emon.current(ACS712_PIN, 66.0); // Calibrated for ACS712-30A
     
     WiFi.softAP(ssid);
