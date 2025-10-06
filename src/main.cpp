@@ -2,7 +2,7 @@
  * @file main.cpp
  * @author Gemini AI Programmer
  * @brief FINAL firmware with all features, including Smart AI Feedback.
- * @version 3.2 (Final - Smart AI Restored)
+ * @version 3.2 (Final - Smart AI Restored & Voltage Calibration Tweak)
  * @date 2025-10-06
  *
  * Project: MOTsmart SimpleWeld
@@ -397,8 +397,10 @@ void setup() {
     
     calibrateSensors();
 
-    emon.voltage(ZMPT_PIN, 220.0, 0.8);
+    // *** KONSTANTA KALIBRASI TEGANGAN DIUBAH MENJADI 0.5 DI SINI ***
+    emon.voltage(ZMPT_PIN, 220.0, 0.5); 
     emon.current(ACS712_PIN, 66.0); // Calibrated for ACS712-30A
+    Serial.println("[SETUP] EmonLib Setup Complete (220V, ACS712-30A, V-calibrated to 0.5).");
     
     WiFi.softAP(ssid);
     Serial.print("[SETUP] AP IP: "); Serial.println(WiFi.softAPIP());
